@@ -290,6 +290,25 @@ readinessProbe가 걸려 있다. 이름이 풀리는 시점이 곧 `pg_isready` 
 busybox는 1.85MB고 k3s가 번들로 갖고 있어 노드에 이미 있다. postgres 이미지는
 108MB이고, migrate가 postgres-0과 다른 노드에 스케줄되면 그만큼 받아야 한다.
 
+**Traefik의 X-Forwarded-Proto: ws.** 브라우저에서 websocket 연결이 403으로
+거부됐다. Traefik(k3s 기본 Ingress)이 업그레이드 요청에 `http`가 아니라 `ws`를
+넣기 때문이다. engineio는 그 값을 그대로 스킴으로 써서 허용 오리진을 계산한다.
+
+```python
+# engineio/async_drivers/asgi.py:217
+environ['wsgi.url_scheme'] = environ.get('HTTP_X_FORWARDED_PROTO', 'http')
+```
+
+| 경로 | X-Forwarded-Proto | 허용 오리진 | 브라우저 Origin | 결과 |
+|---|---|---|---|---|
+| backend 직접 | 없음 | `http://localhost` | `http://localhost` | 101 |
+| Traefik 경유 | `ws` | `ws://localhost` | `http://localhost` | 403 |
+
+nginx의 `$forwarded_proto` map에서 `ws` -> `http`, `wss` -> `https`로 정규화해
+해결했다. 같은 수정이 잠재 버그 하나도 막는다. `$cookie_secure_flag` 가 `https`
+만 보기 때문에, Cloudflare Tunnel 같은 https 경로로 온 websocket은
+`X-Forwarded-Proto: wss` 가 되어 Secure 쿠키가 벗겨졌을 것이다.
+
 **redis-0 복귀 시 과도 상태.** 재생성된 redis-0이 몇 초간 master로 떴다.
 Sentinel이 아직 failover를 끝내지 않아 `start.sh` 의 조회가 옛 답을 받았기
 때문이다. 곧 Sentinel이 `REPLICAOF redis-1` 을 보내 교정했고 최종 상태는
