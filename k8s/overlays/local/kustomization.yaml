@@ -23,11 +23,11 @@ images:
   - name: emoselfie-web
     newTag: local
 
-# Docker Desktop 메모리가 8.3GB다. backend가 pod당 약 2GB를 쓰므로 3개는 들어가지
-# 않는다. 2개면 서로 다른 노드에 흩어져 공유 볼륨 경로가 검증된다.
+# 노드를 --servers-memory 4g 로 t3.medium과 같게 맞췄으므로 3개를 그대로 올려
+# EC2에서 스케줄이 되는지 미리 확인한다. 노드당 2Gi backend 하나씩 들어간다.
 replicas:
   - name: backend
-    count: 2
+    count: 3
 
 configMapGenerator:
   - name: backend-env

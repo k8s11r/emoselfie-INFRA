@@ -112,9 +112,25 @@ k3d는 노드가 전부 같은 Docker 호스트의 컨테이너다. 호스트 �
 ```bash
 mkdir -p "$HOME/.emoselfie-models"
 k3d cluster create mycluster --servers 3 \
+  --servers-memory 4g \
   --volume "$HOME/.emoselfie-models:/models@all" \
   -p "80:80@loadbalancer" -p "443:443@loadbalancer"
 ```
+
+`--servers-memory 4g` 는 각 노드를 t3.medium과 같은 크기로 맞춘다. 이게 없으면
+k3d 노드가 Docker VM 전체 메모리를 자기 것으로 보고해서, EC2였다면 스케줄되지
+않을 pod도 로컬에서는 멀쩡히 뜬다. kubelet까지 반영되는 것을 확인했다.
+
+```
+NAME                     CAP_MEM     ALLOC_MEM   CPU
+k3d-mycluster-server-0   4294967Ki   4294967Ki   8
+k3d-mycluster-server-1   4294967Ki   4294967Ki   8
+k3d-mycluster-server-2   4294967Ki   4294967Ki   8
+```
+
+Docker Desktop 메모리는 12GB로 둔다(4GB × 3). CPU는 미러링되지 않는다 — k3d에
+노드별 CPU 제한 옵션이 없어 노드가 호스트 코어 수(8)를 그대로 보고한다.
+t3.medium은 2 vCPU이므로 CPU 압박은 로컬에서 재현되지 않는다.
 
 `--volume` 은 생성 시점 옵션이라 기존 클러스터에 추가할 수 없다. 이미 있으면
 `k3d cluster delete mycluster` 후 다시 만들어야 한다.
@@ -127,9 +143,9 @@ rwxprobe-...-kvsmh   k3d-mycluster-server-1
 → 두 pod 모두 상대가 쓴 파일을 본다
 ```
 
-Docker Desktop 메모리가 8.3GB라 backend 3개는 들어가지 않는다(pod당 약 2GB).
-local overlay가 2개로 두며, 2개여도 서로 다른 노드에 흩어져 공유 경로는
-검증된다.
+backend는 `requests == limits` 로 2Gi를 잡고 로컬도 같은 값을 쓴다(base에 있다).
+4GB 노드 3대에 replica 3개가 하나씩 들어가므로, EC2에서 스케줄이 되는지를 맥에서
+미리 확인할 수 있다.
 
 ### 운영 (EC2 k3s)
 

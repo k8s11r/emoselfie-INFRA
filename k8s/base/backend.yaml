@@ -44,6 +44,17 @@ spec:
             - secretRef: {name: emoselfie-secrets}
           ports:
             - containerPort: 8000
+          # requests == limits 로 Guaranteed QoS를 받는다. 추론 워크로드는
+          # 노드 메모리 압박 시 축출되면 안 된다.
+          #
+          # torch가 limit을 모르고 코어 수만큼 스레드를 띄우면 스로틀링으로
+          # 오히려 느려지므로 INFERENCE_TORCH_THREADS=1 과 cpu limit을 맞춘다.
+          #
+          # 로컬 k3d도 --servers-memory 4g 로 노드를 t3.medium과 같게 맞춰서
+          # 이 값으로 스케줄이 되는지 미리 확인한다.
+          resources:
+            requests: {cpu: "1", memory: 2Gi}
+            limits:   {cpu: "1", memory: 2Gi}
           volumeMounts:
             - name: models
               mountPath: /models
