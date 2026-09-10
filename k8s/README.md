@@ -309,6 +309,36 @@ nginx의 `$forwarded_proto` map에서 `ws` -> `http`, `wss` -> `https`로 정규
 만 보기 때문에, Cloudflare Tunnel 같은 https 경로로 온 websocket은
 `X-Forwarded-Proto: wss` 가 되어 Secure 쿠키가 벗겨졌을 것이다.
 
+**Cloudflare Tunnel 경유 시 FORBIDDEN_ORIGIN.** 터널을 통해 방을 만들면 403이
+났다. 원인이 둘이었고 둘 다 compose에는 있던 것이 매니페스트로 넘어오며 빠진
+것이다.
+
+첫째, Traefik이 cloudflared가 보낸 `X-Forwarded-Proto: https` 를 실제 연결
+스킴(`http`)으로 덮어썼다. `HelmChartConfig` 로 `forwardedHeaders.insecure` 를
+켜서 해결한다(로컬 실행 스크립트가 적용한다).
+
+```
+설정 전:  X-Forwarded-Proto: https -> http
+설정 후:  X-Forwarded-Proto: https -> https
+```
+
+둘째, backend가 이미지 기본 CMD로 떠서 `--proxy-headers` 가 없었다. 그러면
+uvicorn이 `scope["scheme"]` 을 항상 `http` 로 두고, `middleware.py` 의
+`parsed.scheme == scope["scheme"]` 비교가 어긋나 https 요청이 FORBIDDEN_ORIGIN이
+된다. compose는 이 인자를 주고 있었다(PR #3). base의 backend에 같은 인자를 넣었다.
+
+실제 Quick Tunnel로 확인했다.
+
+```
+GET  /                          200
+POST /api/rooms                 201  {"slug":"4nc6SVXHRV0J", ...}
+websocket 업그레이드              101 Switching Protocols
+Set-Cookie                      ... SameSite=lax; Secure     <- https에서 유지
+```
+
+http로 직접 접속하면 `Secure` 가 벗겨지는 것도 그대로다. PR #3이 의도한 동작이
+처음으로 실증됐다.
+
 **redis-0 복귀 시 과도 상태.** 재생성된 redis-0이 몇 초간 master로 떴다.
 Sentinel이 아직 failover를 끝내지 않아 `start.sh` 의 조회가 옛 답을 받았기
 때문이다. 곧 Sentinel이 `REPLICAOF redis-1` 을 보내 교정했고 최종 상태는
