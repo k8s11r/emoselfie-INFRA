@@ -269,17 +269,26 @@ failover 후:  OK  value=after   master=redis-1.redis.local.svc.cluster.local
 실패했다. `backoffLimit: 3` 중 2를 소진하고 세 번째에 겨우 성공했다. Job은 한도를
 넘기면 영구 실패라 재시도에 기대면 안 된다.
 
-`wait-postgres` initContainer(`pg_isready` 폴링)를 붙이고, postgres와 Job을 지운
-뒤 동시에 다시 올려 재현 검증했다. 첫 시도에 성공했고 실패 pod가 없다.
+`wait-postgres` initContainer를 붙이고, postgres와 Job을 지운 뒤 동시에 다시
+올려 재현 검증했다. 첫 시도에 성공했고 실패 pod가 없다.
 
 ```
-postgres 대기 중  ->  postgres:5432 - no response
-postgres 대기 중  ->  postgres:5432 - no response
-postgres 대기 중  ->  postgres:5432 - accepting connections
+nc: bad address 'postgres'    <- postgres가 not ready. headless DNS가 비어 있다
+nc: bad address 'postgres'
+postgres 대기 중               <- ready 되자 이름이 풀리고 연결됨
 
 이전: migrate pod 3개 (Error, Error, Completed)
 이후: migrate pod 1개 (Completed)
 ```
+
+`pg_isready` 가 아니라 `nc` 를 쓰는 이유가 여기 있다. postgres Service가
+headless라 DNS가 ready인 pod만 반환하고, postgres pod에는 이미 `pg_isready`
+readinessProbe가 걸려 있다. 이름이 풀리는 시점이 곧 `pg_isready` 가 통과한
+시점이라 initContainer에서 다시 확인할 필요가 없다. 처음 실패도 연결 거부가
+아니라 `socket.gaierror: Name or service not known` 이었다.
+
+busybox는 1.85MB고 k3s가 번들로 갖고 있어 노드에 이미 있다. postgres 이미지는
+108MB이고, migrate가 postgres-0과 다른 노드에 스케줄되면 그만큼 받아야 한다.
 
 **redis-0 복귀 시 과도 상태.** 재생성된 redis-0이 몇 초간 master로 떴다.
 Sentinel이 아직 failover를 끝내지 않아 `start.sh` 의 조회가 옛 답을 받았기
