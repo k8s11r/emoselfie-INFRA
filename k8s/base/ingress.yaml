@@ -1,0 +1,22 @@
+# k3d와 k3s 모두 Traefik을 기본 탑재한다. 로컬은 k3d serverlb가 호스트 80을
+# 잡고 있어 http://localhost 로 바로 닿는다.
+#
+# Socket.IO 핸드셰이크가 polling으로 시작하므로 backend replica가 2개 이상이면
+# sticky session이 필요하다. backend Service에 sessionAffinity: ClientIP를
+# 주는 방식이 가장 간단하다 (prod 오버레이 참고).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: emoselfie
+spec:
+  ingressClassName: traefik
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port:
+                  number: 80

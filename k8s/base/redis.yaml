@@ -1,0 +1,97 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config
+data:
+  start.sh: |
+    #!/bin/sh
+    # 네임스페이스는 downward API로 주입받는다. 오버레이마다 달라지므로 하드코딩하지 않는다.
+    FQDN="${HOSTNAME}.redis.${POD_NAMESPACE}.svc.cluster.local"
+
+    # 현재 master는 sentinel에게 묻는다. 일시적 조회 실패로 잘못된 폴백을 타지 않게 3회 재시도.
+    for _ in 1 2 3; do
+      MASTER=$(redis-cli -h redis-sentinel -p 26379 -t 3 sentinel get-master-addr-by-name mymaster 2>/dev/null | head -1)
+      [ -n "$MASTER" ] && break || sleep 5
+    done
+    # 3회 모두 실패 = sentinel이 아직 없는 최초 부팅. redis-0으로 부트스트랩.
+    [ -n "$MASTER" ] || MASTER="redis-0.redis.${POD_NAMESPACE}.svc.cluster.local"
+
+    {
+      echo "dir /data"
+      echo "appendonly yes"
+      # pod IP는 재시작마다 바뀌므로 sentinel에는 안정적인 hostname으로 자신을 알린다
+      echo "replica-announce-ip ${FQDN}"
+      [ "$MASTER" = "$FQDN" ] || echo "replicaof ${MASTER} 6379"
+    } > /tmp/redis.conf
+
+    exec redis-server /tmp/redis.conf
+
+---
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+spec:
+  serviceName: redis
+  # 콜드 부트 시 pod 3개를 동시에 기동 (직렬 대기 제거). replicaof 대상이 늦게 떠도 redis가 재시도한다.
+  podManagementPolicy: Parallel
+  replicas: 3
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7
+          command: ["sh", "/etc/redis/start.sh"]
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+            - name: config
+              mountPath: /etc/redis
+      volumes:
+        - name: config
+          configMap:
+            name: redis-config
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+        storageClassName: local-path
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+spec:
+  clusterIP: None
+  selector:
+    app: redis
+
+  ports:
+    - port: 6379
+      targetPort: 6379

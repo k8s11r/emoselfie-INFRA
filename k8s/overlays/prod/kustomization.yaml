@@ -1,0 +1,50 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: emoselfie
+
+resources:
+  - ../../base
+
+# EC2가 amd64라 거기서 빌드한다. 모델 가중치 94MB는 이미지에 굽는다.
+# 3노드에 파일을 수동으로 뿌리고 동기화하는 것보다 안전하다.
+images:
+  - name: emoselfie-backend
+    newTag: amd64-v1
+  - name: emoselfie-web
+    newTag: v1
+
+replicas:
+  - name: backend
+    count: 2
+
+configMapGenerator:
+  - name: backend-env
+    behavior: merge
+    literals:
+      - APP_ENV=production
+      - INFERENCE_BACKEND=real
+
+# Secret은 저장소에 두지 않는다. 배포 전에 클러스터에 직접 만든다.
+#   kubectl create secret generic emoselfie-secrets -n emoselfie \
+#     --from-literal=POSTGRES_USER=... --from-literal=DATABASE_URL=... ...
+
+patches:
+  # Socket.IO 핸드셰이크가 polling으로 시작하므로 replica가 2개 이상이면
+  # 같은 클라이언트가 같은 pod로 가야 한다.
+  - target: {kind: Service, name: backend}
+    patch: |
+      - op: add
+        path: /spec/sessionAffinity
+        value: ClientIP
+
+  # 추론 워크로드는 축출되면 안 된다. requests == limits로 Guaranteed QoS를 받는다.
+  # torch가 limit을 모르고 코어 수만큼 스레드를 띄우면 스로틀링으로 느려지므로
+  # INFERENCE_TORCH_THREADS=1 과 cpu limit을 맞춘다.
+  - target: {kind: Deployment, name: backend}
+    patch: |
+      - op: add
+        path: /spec/template/spec/containers/0/resources
+        value:
+          requests: {cpu: "1", memory: 2Gi}
+          limits:   {cpu: "1", memory: 2Gi}

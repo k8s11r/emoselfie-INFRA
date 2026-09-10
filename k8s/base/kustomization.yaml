@@ -1,0 +1,32 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - postgres.yaml
+  - redis.yaml
+  - redis-sentinel.yaml
+  - redis-media.yaml
+  - migrate-job.yaml
+  - backend.yaml
+  - web.yaml
+  - ingress.yaml
+
+configMapGenerator:
+  # compose의 web 서비스가 마운트하던 것과 같은 파일이다. 단일 출처를 유지하려고
+  # compose.yaml도 이 경로를 본다.
+  - name: nginx-conf
+    files:
+      - default.conf=web/default.conf
+
+  - name: backend-env
+    literals:
+      - EMOTION_MODEL_PATH=/models/emotion/v1/FER_static_ResNet50_AffectNet.pt
+      - FACE_MODEL_PATH=/models/face/v1/blaze_face_short_range.tflite
+      - INFERENCE_CONCURRENCY=2
+      - INFERENCE_TORCH_THREADS=1
+      # Sentinel이 master를 승격시켜도 앱은 따라가지 못한다. python-socketio의
+      # AsyncRedisManager가 sentinel 프로토콜을 모르기 때문이다. 부트스트랩
+      # master인 redis-0을 직접 가리키고, failover 후에는 backend 재시작이
+      # 필요하다. (알려진 한계, README 참고)
+      - REDIS_URL=redis://redis-0.redis:6379/0
+      - REDIS_MEDIA_URL=redis://redis-media:6379/0

@@ -1,0 +1,24 @@
+# 백엔드보다 먼저 한 번 돌고 끝난다. alembic은 Settings()를 통해 DATABASE_URL을
+# 읽는다 (app/db/migrations/env.py:20).
+#
+# backend의 initContainer로 넣지 않는 이유: initContainer는 replica마다 실행돼
+# 여러 개가 동시에 alembic을 돌린다.
+#
+# Job은 완료 후 spec이 immutable이라 재배포 전에 지워야 한다.
+#   kubectl delete job migrate --ignore-not-found
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: emoselfie-backend
+          command: ["alembic", "upgrade", "head"]
+          envFrom:
+            - configMapRef: {name: backend-env}
+            - secretRef: {name: emoselfie-secrets}
