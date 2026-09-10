@@ -88,6 +88,12 @@ services:
       dockerfile: Dockerfile
     image: emoselfie-backend:local
     platform: linux/amd64
+    # 기본 Dockerfile CMD는 forwarded_allow_ips가 127.0.0.1이라 nginx(별도 컨테이너)의
+    # X-Forwarded-Proto를 무시한다. nginx만 backend에 닿을 수 있으므로 로컬 compose
+    # 한정으로 신뢰 범위를 넓힌다 (Dockerfile 자체는 프로덕션 이미지라 건드리지 않음).
+    command: ["uvicorn", "app.main:create_app", "--factory", "--host", "0.0.0.0",
+              "--port", "8000", "--timeout-graceful-shutdown", "10",
+              "--proxy-headers", "--forwarded-allow-ips=*"]
     environment: *backend-env
     volumes:
       # 모델 가중치는 이미지에 넣지 않는다. 94MB이고 gitignore 대상이라
