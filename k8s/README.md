@@ -28,6 +28,24 @@ inference = [
 않으므로 arm64로는 빌드할 수 없다"고 하는데, mediapipe 0.10.x 기준이라 지금은
 맞지 않는다. 실제로 arm64 네이티브 빌드가 된다.
 
+이미지만 빌드해두면 나머지는 저장소 루트의 `run_local.sh` 가 한다. 클러스터가
+없으면 만들고, 이미지가 바뀐 것만 k3d에 넣고, 배포한다.
+
+```bash
+./run_local.sh
+```
+
+이미지 반영 여부는 이미지 config의 `created` 타임스탬프로 판단한다. docker의
+image ID는 `docker save`/`import` 왕복에서 바뀌어 쓸 수 없지만 `created` 는
+config의 일부라 그대로 보존되고, 나노초 단위라 재빌드하면 반드시 달라진다.
+
+```
+docker image inspect <img> --format '{{.Created}}'
+crictl inspecti --output go-template --template '{{.info.imageSpec.created}}' docker.io/library/<img>
+```
+
+수동으로 하려면:
+
 ```bash
 # 1. 이미지 빌드 (arm64 네이티브)
 docker build -t emoselfie-backend:local ../emoselfie-BE
