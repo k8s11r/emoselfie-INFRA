@@ -240,7 +240,8 @@ redis+sentinel://redis-sentinel-0.redis-sentinel:26379,\
 교체하면 공유 스토리지 없이 스트리밍 복제 + 자동 failover가 가능하다.
 
 **Job 재적용.** `migrate` Job은 완료 후 spec이 immutable이라 재배포 전에
-`kubectl delete job migrate` 가 필요하다.
+`kubectl delete job migrate` 가 필요하다. 기동 순서는 `wait-postgres`
+initContainer가 처리하므로 재시도에 기대지 않는다.
 
 ## 검증 기록
 
@@ -262,6 +263,22 @@ pod를 지우고 새로 뜨게 하면 `Verified ...` 만 찍고 다시 받지 �
 ```
 failover 전:  OK  value=before  master=redis-0.redis.local.svc.cluster.local
 failover 후:  OK  value=after   master=redis-1.redis.local.svc.cluster.local
+```
+
+**migrate 기동 순서.** 처음에는 `migrate` 가 postgres보다 먼저 떠서 DNS 조회부터
+실패했다. `backoffLimit: 3` 중 2를 소진하고 세 번째에 겨우 성공했다. Job은 한도를
+넘기면 영구 실패라 재시도에 기대면 안 된다.
+
+`wait-postgres` initContainer(`pg_isready` 폴링)를 붙이고, postgres와 Job을 지운
+뒤 동시에 다시 올려 재현 검증했다. 첫 시도에 성공했고 실패 pod가 없다.
+
+```
+postgres 대기 중  ->  postgres:5432 - no response
+postgres 대기 중  ->  postgres:5432 - no response
+postgres 대기 중  ->  postgres:5432 - accepting connections
+
+이전: migrate pod 3개 (Error, Error, Completed)
+이후: migrate pod 1개 (Completed)
 ```
 
 **redis-0 복귀 시 과도 상태.** 재생성된 redis-0이 몇 초간 master로 떴다.

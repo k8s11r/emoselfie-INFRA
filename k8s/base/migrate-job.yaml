@@ -15,6 +15,16 @@ spec:
   template:
     spec:
       restartPolicy: Never
+      # postgres보다 먼저 뜨면 DNS 조회부터 실패한다. Job은 backoffLimit을
+      # 소진하면 영구 실패라 재시도에 기대면 안 된다. 실제로 로컬 배포에서
+      # 두 번 실패하고 세 번째에 겨우 성공했다. EC2는 디스크가 느려 더 위험하다.
+      initContainers:
+        - name: wait-postgres
+          image: postgres:16.13-alpine
+          command:
+            - sh
+            - -c
+            - 'until pg_isready -h postgres -p 5432; do echo "postgres 대기 중"; sleep 2; done'
       containers:
         - name: migrate
           image: emoselfie-backend
