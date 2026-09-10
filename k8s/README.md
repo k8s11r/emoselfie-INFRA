@@ -30,12 +30,12 @@ inference = [
 
 ```bash
 # 1. 이미지 빌드 (arm64 네이티브)
-docker build -t emoselfie-backend:arm64 ../emoselfie-BE
+docker build -t emoselfie-backend:local ../emoselfie-BE
 docker build --target models -t emoselfie-models:local ../emoselfie-BE
 docker build -t emoselfie-web:local ../emoselfie-FE
 
 # 2. k3d에 올리기
-k3d image import emoselfie-backend:arm64 emoselfie-models:local emoselfie-web:local -c mycluster
+k3d image import emoselfie-backend:local emoselfie-models:local emoselfie-web:local -c mycluster
 
 # 3. 배포
 kubectl create namespace local --dry-run=client -o yaml | kubectl apply -f -
@@ -241,6 +241,34 @@ redis+sentinel://redis-sentinel-0.redis-sentinel:26379,\
 
 **Job 재적용.** `migrate` Job은 완료 후 spec이 immutable이라 재배포 전에
 `kubectl delete job migrate` 가 필요하다.
+
+## 검증 기록
+
+로컬 k3d(3노드)에서 전체 스택을 띄우고 확인한 내용이다.
+
+**노드 분산.** backend 3개가 노드 하나씩에 흩어졌다. `podAntiAffinity`가 동작한다.
+
+**모델 공유.** 최초 부팅에서는 3개 pod가 동시에 떠서 각자 받았다(경합). 이후
+pod를 지우고 새로 뜨게 하면 `Verified ...` 만 찍고 다시 받지 않는다. 공유 볼륨
+재사용이 성립한다.
+
+**복제 부트스트랩.** `start.sh` 가 redis-0을 master로, redis-1/2를 replica로
+잡았다. Sentinel이 `num-slaves 2`, `num-other-sentinels 2` 로 인식한다.
+
+**Sentinel failover.** `kubectl delete pod redis-0` 후 master가 redis-1로
+승격됐다. **재시작하지 않은 backend pod(RESTARTS=0)가 새 master로 쓰기에
+성공했다.** `redis+sentinel://` 전환이 의도대로 동작한다.
+
+```
+failover 전:  OK  value=before  master=redis-0.redis.local.svc.cluster.local
+failover 후:  OK  value=after   master=redis-1.redis.local.svc.cluster.local
+```
+
+**redis-0 복귀 시 과도 상태.** 재생성된 redis-0이 몇 초간 master로 떴다.
+Sentinel이 아직 failover를 끝내지 않아 `start.sh` 의 조회가 옛 답을 받았기
+때문이다. 곧 Sentinel이 `REPLICAOF redis-1` 을 보내 교정했고 최종 상태는
+master 1 / replica 2 로 수렴했다. 자가 치유되지만 그 몇 초간 두 master가
+공존한다.
 
 ## HA 확인
 

@@ -12,12 +12,12 @@ resources:
 # 에뮬레이션 없이 네이티브로 돈다.
 #
 #   docker build -t emoselfie-backend:local ../emoselfie-BE
-#   docker build -f k8s/models.Dockerfile -t emoselfie-backend:arm64 ../emoselfie-BE
+#   docker build --target models -t emoselfie-models:local ../emoselfie-BE
 #   docker build -t emoselfie-web:local ../emoselfie-FE
-#   k3d image import emoselfie-backend:arm64 emoselfie-web:local -c mycluster
+#   k3d image import emoselfie-backend:local emoselfie-models:local emoselfie-web:local -c mycluster
 images:
   - name: emoselfie-backend
-    newTag: arm64
+    newTag: local
   - name: emoselfie-models
     newTag: local
   - name: emoselfie-web
