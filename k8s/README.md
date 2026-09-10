@@ -25,7 +25,8 @@ inference = [
 ```
 
 `emoselfie-BE/Dockerfile` 상단 주석은 "MediaPipe가 linux/aarch64 휠을 배포하지
-않는다"고 하는데, mediapipe 0.10.x 기준이라 지금은 맞지 않는다.
+않으므로 arm64로는 빌드할 수 없다"고 하는데, mediapipe 0.10.x 기준이라 지금은
+맞지 않는다. 실제로 arm64 네이티브 빌드가 된다.
 
 ```bash
 # 1. 이미지 빌드 (arm64 네이티브)
@@ -44,8 +45,10 @@ kubectl apply -k k8s/overlays/local
 
 k3d serverlb가 호스트 80을 잡고 있어 <http://localhost> 로 바로 닿는다.
 
-`k3d image import`가 느린 게 반복 개발에 걸리면 k3d 레지스트리를 붙이는 편이
-낫다 (`k3d registry create`).
+BE가 Linux에서 torch를 CPU 인덱스로 고정한 뒤(fc7442c) 이미지가 12GB에서
+약 2GB로 줄었다. GPU를 쓰지 않는데 CUDA 빌드가 nvidia 패키지 14개(4.1GB)를
+끌고 오던 것이 빠졌다. `k3d image import`가 이 크기에서도 반복 개발에 걸리면
+k3d 레지스트리를 붙이는 편이 낫다 (`k3d registry create`).
 
 ## 모델 가중치
 
@@ -63,8 +66,9 @@ backend pod의 initContainer로 그대로 쓴다. 운영 이미지에 다운로�
 
 ## 운영 (EC2 k3s)
 
-EC2가 amd64라 거기서 빌드한다. 모델 가중치 94MB는 이미지에 굽는다 — 3노드에
-파일을 수동으로 뿌리고 동기화하는 것보다 안전하다.
+EC2가 amd64라 거기서 빌드한다. arm Mac에서 크로스 빌드하면 에뮬레이션이라
+느리고 이미지를 푸시/풀 하는 비용도 든다. 모델은 로컬과 같이 initContainer가
+받는다.
 
 Secret은 저장소에 두지 않는다. 배포 전에 클러스터에 직접 만든다.
 
