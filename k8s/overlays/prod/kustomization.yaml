@@ -11,6 +11,8 @@ resources:
 images:
   - name: emoselfie-backend
     newTag: amd64-v1
+  - name: emoselfie-models
+    newTag: amd64-v1
   - name: emoselfie-web
     newTag: v1
 

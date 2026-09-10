@@ -17,6 +17,8 @@ resources:
 images:
   - name: emoselfie-backend
     newTag: arm64
+  - name: emoselfie-models
+    newTag: local
   - name: emoselfie-web
     newTag: local
 

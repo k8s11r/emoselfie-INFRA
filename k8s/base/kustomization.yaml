@@ -20,8 +20,10 @@ configMapGenerator:
 
   - name: backend-env
     literals:
-      - EMOTION_MODEL_PATH=/models/emotion/v1/FER_static_ResNet50_AffectNet.pt
-      - FACE_MODEL_PATH=/models/face/v1/blaze_face_short_range.tflite
+      # prepare_models.py는 --directory 아래 평평하게 놓는다. compose는 파일
+      # 단위 bind mount라 중첩 경로를 쓰지만 여기서는 맞지 않는다.
+      - EMOTION_MODEL_PATH=/models/FER_static_ResNet50_AffectNet.pt
+      - FACE_MODEL_PATH=/models/blaze_face_short_range.tflite
       - INFERENCE_CONCURRENCY=2
       - INFERENCE_TORCH_THREADS=1
       # Sentinel이 master를 승격시켜도 앱은 따라가지 못한다. python-socketio의
