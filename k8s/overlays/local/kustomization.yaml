@@ -41,3 +41,15 @@ secretGenerator:
       - COOKIE_SECRET=local-development-cookie-secret-do-not-use-in-production-0
       - CAPTURE_TOKEN_SECRET=local-development-capture-secret-do-not-use-in-production
       - MEDIA_TOKEN_SECRET=local-development-media-secret-do-not-use-in-production-0
+
+patches:
+  # Longhorn은 노드에 open-iscsi가 필요한데 k3d 노드는 컨테이너라 설치가 어렵다.
+  # 로컬은 backend replica가 1개뿐이라 노드 종속 스토리지로도 충분하다.
+  - target: {kind: PersistentVolumeClaim, name: models}
+    patch: |
+      - op: add
+        path: /spec/storageClassName
+        value: local-path
+      - op: replace
+        path: /spec/accessModes
+        value: [ReadWriteOnce]

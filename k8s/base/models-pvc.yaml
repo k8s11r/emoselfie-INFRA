@@ -1,0 +1,20 @@
+# 모델 가중치 94MB를 노드 전체가 공유한다.
+#
+# emptyDir은 pod마다 따로라 pod가 새로 뜰 때마다 다시 받았다. 공유 볼륨을 쓰면
+# 최초 1회만 받고 이후 pod들은 그대로 재사용한다. 3노드지만 실물은 하나다.
+#
+# prepare_models.py가 이 방식을 이미 지원한다. 파일이 있고 sha256이 맞으면
+# 받지 않고, 받을 때는 임시 파일에 쓴 뒤 os.replace로 원자 교체하므로 여러 pod가
+# 동시에 초기화해도 안전하다.
+#
+# ReadWriteMany는 여러 노드의 pod가 같은 볼륨을 동시에 붙일 수 있다는 뜻이다.
+# storageClassName은 오버레이가 지정한다 (prod: longhorn, local: local-path).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: models
+spec:
+  accessModes: [ReadWriteMany]
+  resources:
+    requests:
+      storage: 1Gi

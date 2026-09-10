@@ -32,6 +32,14 @@ configMapGenerator:
 #     --from-literal=POSTGRES_USER=... --from-literal=DATABASE_URL=... ...
 
 patches:
+  # 모델 가중치를 3노드가 공유한다. 최초 1회만 받고 이후 pod는 재사용한다.
+  # Longhorn 설치가 선행돼야 한다 (README 참고).
+  - target: {kind: PersistentVolumeClaim, name: models}
+    patch: |
+      - op: add
+        path: /spec/storageClassName
+        value: longhorn
+
   # Socket.IO 핸드셰이크가 polling으로 시작하므로 replica가 2개 이상이면
   # 같은 클라이언트가 같은 pod로 가야 한다.
   - target: {kind: Service, name: backend}

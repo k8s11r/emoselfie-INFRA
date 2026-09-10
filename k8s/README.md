@@ -52,23 +52,89 @@ k3d 레지스트리를 붙이는 편이 낫다 (`k3d registry create`).
 
 ## 모델 가중치
 
-94MB라 이미지에 들어 있지 않다. BE Dockerfile의 `models` 스테이지가 이 용도로
-만들어져 있고(`ENTRYPOINT prepare_models.py`, `CMD --directory /models`),
-backend pod의 initContainer로 그대로 쓴다. 운영 이미지에 다운로드 클라이언트를
-넣지 않기 위한 분리다(BE 가이드라인 §28). 스크립트는 멱등하고 sha256을 검증한다.
+감정 인식 모델(`FER_static_ResNet50_AffectNet.pt`)이 94MB다. 이미지에 넣지 않고
+pod가 뜰 때 받아서 공유 볼륨에 놓는다.
 
-`emptyDir`이라 pod가 새로 뜰 때마다 다시 받는다. 노드마다 파일을 수동으로 뿌리지
-않아도 되는 대신 기동이 느려지는 교환이다.
+### 왜 이미지에 안 넣나
 
-`prepare_models.py`는 `--directory` 아래 **평평하게** 파일을 놓는다. compose는
-파일 단위 bind mount라 `/models/emotion/v1/...` 중첩 경로를 쓰지만 여기서는
-맞지 않으므로 `backend-env`가 평평한 경로를 가리킨다.
+BE 가이드라인 §28이 운영 이미지에 다운로드 클라이언트를 넣지 않도록 한다. 받는
+데 쓰는 `httpx`는 dev 의존성이라 런타임 이미지에 아예 없다. 그래서 BE
+Dockerfile이 다운로드 전용 스테이지를 따로 만들어 둔다.
+
+```dockerfile
+FROM ${PYTHON_IMAGE} AS models
+RUN pip install --no-cache-dir httpx==0.28.1
+COPY scripts/prepare_models.py ./scripts/prepare_models.py
+ENTRYPOINT ["python", "scripts/prepare_models.py"]
+CMD ["--directory", "/models"]
+```
+
+이 스테이지를 그대로 backend pod의 **initContainer**로 쓴다. initContainer는
+본 컨테이너보다 먼저 실행되고 끝나는 컨테이너다. 여기서는 모델을 볼륨에 놓고
+종료하며, 그다음 backend 컨테이너가 그 볼륨을 읽기 전용으로 마운트해 시작한다.
+
+### 3노드가 하나를 공유한다
+
+`models` PVC를 `ReadWriteMany`로 잡아 세 노드의 pod가 같은 볼륨을 동시에
+붙인다. **최초 1회만 받고 이후 생성되는 pod는 그대로 재사용한다.** 3노드지만
+실물은 하나다.
+
+`prepare_models.py`가 이미 이 방식에 맞게 쓰여 있다.
+
+```python
+if target.is_file():
+    if hashlib.file_digest(source, "sha256").hexdigest() == artifact["sha256"]:
+        print(f"Verified {name}")
+        continue          # 이미 있고 해시가 맞으면 받지 않는다
+...
+os.replace(temporary, target)   # 임시 파일에 받고 원자적으로 교체
+```
+
+파일이 있으면 sha256만 확인하고 건너뛰므로 두 번째 pod부터는 다운로드가 없다.
+받을 때도 임시 파일에 쓴 뒤 `os.replace`로 원자 교체하므로, 여러 pod가 동시에
+초기화해도 반쯤 쓰인 파일이 보이는 일이 없다. 최악의 경우 두 pod가 각자 받아
+같은 결과를 쓰는 정도다.
+
+**Longhorn 설치가 선행돼야 한다.** `ReadWriteMany`를 지원하는 스토리지가
+필요하고, k3s 기본 local-path는 노드 종속이라 안 된다.
+
+```bash
+# 각 EC2 노드에서
+sudo apt-get install -y open-iscsi nfs-common
+sudo systemctl enable --now iscsid
+
+# 클러스터에
+kubectl apply -f https://raw.githubusercontent.com/longhorn/longhorn/v1.7.2/deploy/longhorn.yaml
+kubectl -n longhorn-system get pods -w    # 전부 Running 확인
+```
+
+Longhorn 자체가 노드당 수백 MB를 쓴다. t3.medium(4GB) 3대에서는 backend가
+이미 대부분을 차지하므로, 메모리가 빠듯하면 backend replica를 줄여야 할 수 있다.
+
+로컬 k3d에서는 Longhorn을 쓰지 않는다. 노드가 컨테이너라 open-iscsi 설치가
+까다롭다. local overlay가 PVC를 `local-path` + `ReadWriteOnce`로 바꾼다 —
+로컬은 backend replica가 1개뿐이라 노드 종속이어도 충분하다.
+
+### 경로
+
+`prepare_models.py`는 `--directory` 아래에 파일을 **그대로** 놓는다.
+
+```
+/models/FER_static_ResNet50_AffectNet.pt
+/models/blaze_face_short_range.tflite
+```
+
+compose는 파일 하나씩 bind mount라 원하는 경로 아무 데나 놓을 수 있어
+`/models/emotion/v1/...` 같은 중첩 경로를 쓴다. k8s는 볼륨 디렉터리를 통째로
+마운트하므로 스크립트가 놓는 위치를 그대로 따라야 한다. `backend-env`의
+`EMOTION_MODEL_PATH`/`FACE_MODEL_PATH`가 위 평평한 경로를 가리키는 이유다.
 
 ## 운영 (EC2 k3s)
 
 EC2가 amd64라 거기서 빌드한다. arm Mac에서 크로스 빌드하면 에뮬레이션이라
-느리고 이미지를 푸시/풀 하는 비용도 든다. 모델은 로컬과 같이 initContainer가
-받는다.
+느리고 이미지를 푸시/풀 하는 비용도 든다.
+
+Longhorn 설치가 선행돼야 한다 (위 "모델 가중치" 참고).
 
 Secret은 저장소에 두지 않는다. 배포 전에 클러스터에 직접 만든다.
 

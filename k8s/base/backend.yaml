@@ -28,8 +28,8 @@ spec:
       # /models). 운영 이미지에 다운로드 클라이언트를 넣지 않기 위한 분리다
       # (BE 가이드라인 §28). 스크립트는 멱등하고 sha256을 검증한다.
       #
-      # emptyDir이라 pod가 새로 뜰 때마다 다시 받는다. 노드마다 파일을 수동으로
-      # 뿌리지 않아도 되는 대신 기동이 느려지는 교환이다.
+      # 공유 볼륨(models PVC)이라 최초 1회만 받고 이후 pod는 재사용한다.
+      # 스크립트가 sha256으로 확인하고 건너뛴다.
       initContainers:
         - name: prepare-models
           image: emoselfie-models
@@ -66,7 +66,8 @@ spec:
       terminationGracePeriodSeconds: 20
       volumes:
         - name: models
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: models
 
 ---
 
