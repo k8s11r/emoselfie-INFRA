@@ -6,26 +6,38 @@
 k8s/
 ├── base/                 # 환경 공통
 └── overlays/
-    ├── local/            # k3d (arm64, 추론 fake)
+    ├── local/            # k3d (arm64 네이티브, 추론 real)
     └── prod/             # EC2 k3s (amd64, 추론 real)
 ```
 
 ## 로컬 (k3d)
 
-로컬은 arm64다. MediaPipe가 aarch64 휠을 배포하지 않아 추론 의존성을 뺀 이미지를
-쓰고, `INFERENCE_BACKEND=fake`로 `load_real_pipeline`을 우회한다
-(`app/inference/loader.py:70`). 모델 가중치도 필요 없다.
+로컬은 arm64 네이티브다. mediapipe 1.0.1과 torch 2.8.0 모두 `manylinux_2_28_aarch64`
+휠을 배포하고 `emoselfie-BE/pyproject.toml`이 이미 플랫폼별로 분기하므로,
+**추론을 그대로 쓴다.** 에뮬레이션이 없어 빠르다.
 
-추론만 빠지고 나머지(postgres, redis, Sentinel failover, Socket.IO 크로스 인스턴스
-브로드캐스트, 마이그레이션, nginx 경로 분기, 노드 drain)는 EC2와 동일하게 검증된다.
+```toml
+inference = [
+  "torch==2.8.0",
+  "mediapipe==0.10.35; platform_machine != 'aarch64' or sys_platform == 'darwin'",
+  "mediapipe==1.0.1; platform_machine == 'aarch64' and sys_platform != 'darwin'",
+]
+```
+
+`emoselfie-BE/Dockerfile` 상단 주석은 "MediaPipe가 linux/aarch64 휠을 배포하지
+않는다"고 하는데, mediapipe 0.10.x 기준이라 지금은 맞지 않는다.
 
 ```bash
+# 0. 모델 가중치 준비 (최초 1회, 94MB)
+cd ../emoselfie-BE && uv run python scripts/prepare_models.py && cd -
+
 # 1. 이미지 빌드 (arm64 네이티브)
-docker build --build-arg UV_EXTRAS= -t emoselfie-backend:arm64-dev ../emoselfie-BE
+docker build -t emoselfie-backend:local ../emoselfie-BE
+docker build -f k8s/models.Dockerfile -t emoselfie-backend:arm64 ../emoselfie-BE
 docker build -t emoselfie-web:local ../emoselfie-FE
 
-# 2. k3d에 올리기
-k3d image import emoselfie-backend:arm64-dev emoselfie-web:local -c mycluster
+# 2. k3d에 올리기 (이미지가 4GB대라 몇 분 걸린다)
+k3d image import emoselfie-backend:arm64 emoselfie-web:local -c mycluster
 
 # 3. 배포
 kubectl create namespace local --dry-run=client -o yaml | kubectl apply -f -
@@ -35,14 +47,8 @@ kubectl apply -k k8s/overlays/local
 
 k3d serverlb가 호스트 80을 잡고 있어 <http://localhost> 로 바로 닿는다.
 
-`--build-arg UV_EXTRAS=` 는 `emoselfie-BE`의 Dockerfile이 extras를 build arg로
-받도록 바뀐 뒤에 동작한다. 아직이면 다음 변경이 필요하다.
-
-```dockerfile
-ARG UV_EXTRAS="--extra inference"
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-dev ${UV_EXTRAS}
-```
+`k3d image import`가 느린 게 반복 개발에 걸리면 k3d 레지스트리를 붙이는 편이
+낫다 (`k3d registry create`).
 
 ## 운영 (EC2 k3s)
 

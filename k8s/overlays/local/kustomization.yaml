@@ -6,15 +6,17 @@ namespace: local
 resources:
   - ../../base
 
-# 로컬은 arm64 네이티브다. MediaPipe가 aarch64 휠을 배포하지 않아 추론 의존성을
-# 뺀 이미지를 쓰고, INFERENCE_BACKEND=fake로 load_real_pipeline을 우회한다
-# (app/inference/loader.py:70). 모델 가중치도 필요 없다.
+# 로컬은 arm64 네이티브다. mediapipe 1.0.1과 torch 2.8.0 모두 manylinux_2_28_aarch64
+# 휠이 있고 pyproject.toml이 이미 플랫폼별로 분기하므로, 추론을 그대로 쓴다.
+# 에뮬레이션 없이 네이티브로 돈다.
 #
-#   docker build --build-arg UV_EXTRAS= -t emoselfie-backend:arm64-dev ../emoselfie-BE
-#   k3d image import emoselfie-backend:arm64-dev emoselfie-web:local -c mycluster
+#   docker build -t emoselfie-backend:local ../emoselfie-BE
+#   docker build -f k8s/models.Dockerfile -t emoselfie-backend:arm64 ../emoselfie-BE
+#   docker build -t emoselfie-web:local ../emoselfie-FE
+#   k3d image import emoselfie-backend:arm64 emoselfie-web:local -c mycluster
 images:
   - name: emoselfie-backend
-    newTag: arm64-dev
+    newTag: arm64
   - name: emoselfie-web
     newTag: local
 
@@ -23,7 +25,7 @@ configMapGenerator:
     behavior: merge
     literals:
       - APP_ENV=development
-      - INFERENCE_BACKEND=fake
+      - INFERENCE_BACKEND=real
 
 # 로컬 전용 값이다. 운영에서는 클러스터에 직접 만든 Secret을 쓴다.
 # compose.yaml의 기본값과 동일하다.
