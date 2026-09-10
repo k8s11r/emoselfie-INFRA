@@ -1,0 +1,88 @@
+# 단일 인스턴스다. HA가 아니다.
+#
+# k3s 기본 스토리지가 local-path라 PVC가 특정 노드 디스크에 묶인다. 그 노드가
+# 죽으면 pod가 다른 노드로 재스케줄되지 못하고 Pending에 갇힌다. 즉 3노드
+# 구성에서 여기만 단일 장애점으로 남는다.
+#
+# 진짜 HA가 필요해지면 CloudNativePG 오퍼레이터로 교체한다. 공유 스토리지 없이
+# 스트리밍 복제 + 자동 failover를 하므로 local-path 위에서도 동작한다.
+#
+# replicas가 1인데 왜 StatefulSet인가:
+#   Deployment의 기본 전략은 RollingUpdate라 새 pod를 먼저 띄우고 준비되면 옛
+#   pod를 내린다. PVC가 ReadWriteOnce라 두 pod가 같은 볼륨을 동시에 못 잡으므로
+#   새 pod는 Pending, 옛 pod는 안 내려가는 교착이 된다. StatefulSet은 기본이
+#   OrderedReady라 옛 pod를 먼저 완전히 내린다.
+#   Deployment + strategy: Recreate + 별도 PVC 선언으로도 같은 결과를 낼 수
+#   있다. StatefulSet이 유일한 답은 아니다.
+#
+# 왜 headless인가:
+#   StatefulSet의 serviceName은 필수이고 쿠버네티스 문서가 headless를 요구한다.
+#   pod별 고정 DNS가 headless일 때만 생성되기 때문이다. 단일 postgres에는 그
+#   DNS가 필요 없으므로(클라이언트는 postgres:5432만 알면 된다) StatefulSet을
+#   고른 결과로 따라온 것에 가깝다.
+#   부작용이 하나 있다. headless는 ready인 pod만 DNS로 반환하므로 postgres가
+#   준비되기 전 조회는 NXDOMAIN이 된다. ClusterIP였다면 이름은 풀리고 연결만
+#   거부된다. 시작할 때 이름을 한 번 풀고 캐시하는 클라이언트에는 후자가 더
+#   관대하다. 대신 이 성질 덕분에 migrate의 대기 initContainer가 nc 한 줄로
+#   끝난다 (k8s/base/migrate-job.yaml 참고).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16.13-alpine
+          env:
+            - name: POSTGRES_USER
+              valueFrom: {secretKeyRef: {name: emoselfie-secrets, key: POSTGRES_USER}}
+            - name: POSTGRES_PASSWORD
+              valueFrom: {secretKeyRef: {name: emoselfie-secrets, key: POSTGRES_PASSWORD}}
+            - name: POSTGRES_DB
+              valueFrom: {secretKeyRef: {name: emoselfie-secrets, key: POSTGRES_DB}}
+            # 기본 데이터 디렉터리에 바로 마운트하면 lost+found 때문에 initdb가
+            # 실패하는 환경이 있다. 하위 디렉터리를 쓴다.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 5Gi
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  clusterIP: None
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432

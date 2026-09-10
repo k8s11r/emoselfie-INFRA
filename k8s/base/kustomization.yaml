@@ -1,0 +1,34 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - postgres.yaml
+  - redis.yaml
+  - redis-sentinel.yaml
+  - redis-media.yaml
+  - models-pvc.yaml
+  - migrate-job.yaml
+  - backend.yaml
+  - web.yaml
+  - ingress.yaml
+
+configMapGenerator:
+  # compose의 web 서비스가 마운트하던 것과 같은 파일이다. 단일 출처를 유지하려고
+  # compose.yaml도 이 경로를 본다.
+  - name: nginx-conf
+    files:
+      - default.conf=web/default.conf
+
+  - name: backend-env
+    literals:
+      # prepare_models.py는 --directory 아래 평평하게 놓는다. compose는 파일
+      # 단위 bind mount라 중첩 경로를 쓰지만 여기서는 맞지 않는다.
+      - EMOTION_MODEL_PATH=/models/FER_static_ResNet50_AffectNet.pt
+      - FACE_MODEL_PATH=/models/blaze_face_short_range.tflite
+      - INFERENCE_CONCURRENCY=2
+      - INFERENCE_TORCH_THREADS=1
+      # Sentinel에게 현재 master를 물어보는 형식이다. master가 승격돼도 앱이
+      # 따라간다. 세 sentinel을 모두 나열하는 이유는 하나가 죽어도 나머지에게
+      # 물어볼 수 있어야 하기 때문이다. 짧은 이름이라 네임스페이스에 무관하다.
+      - REDIS_URL=redis+sentinel://redis-sentinel-0.redis-sentinel:26379,redis-sentinel-1.redis-sentinel:26379,redis-sentinel-2.redis-sentinel:26379/0/mymaster
+      - REDIS_MEDIA_URL=redis://redis-media:6379/0

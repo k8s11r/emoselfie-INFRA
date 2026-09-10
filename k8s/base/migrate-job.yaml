@@ -1,0 +1,39 @@
+# 백엔드보다 먼저 한 번 돌고 끝난다. alembic은 Settings()를 통해 DATABASE_URL을
+# 읽는다 (app/db/migrations/env.py:20).
+#
+# backend의 initContainer로 넣지 않는 이유: initContainer는 replica마다 실행돼
+# 여러 개가 동시에 alembic을 돌린다.
+#
+# Job은 완료 후 spec이 immutable이라 재배포 전에 지워야 한다.
+#   kubectl delete job migrate --ignore-not-found
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: Never
+      # postgres보다 먼저 뜨면 DNS 조회부터 실패한다. Job은 backoffLimit을
+      # 소진하면 영구 실패라 재시도에 기대면 안 된다. 실제로 로컬 배포에서
+      # 두 번 실패하고 세 번째에 겨우 성공했다. EC2는 디스크가 느려 더 위험하다.
+      #
+      # nc 로 충분하다. postgres Service가 headless라 DNS가 ready인 pod만
+      # 반환하고, postgres pod에는 이미 pg_isready readinessProbe가 걸려 있다.
+      # 이름이 풀리는 시점이 곧 pg_isready가 통과한 시점이라 여기서 또 확인할
+      # 필요가 없다. busybox는 1.85MB고 k3s가 번들로 갖고 있다.
+      initContainers:
+        - name: wait-postgres
+          image: busybox:1.37
+          command:
+            - sh
+            - -c
+            - 'until nc -z postgres 5432; do echo "postgres 대기 중"; sleep 2; done'
+      containers:
+        - name: migrate
+          image: emoselfie-backend
+          command: ["alembic", "upgrade", "head"]
+          envFrom:
+            - configMapRef: {name: backend-env}
+            - secretRef: {name: emoselfie-secrets}

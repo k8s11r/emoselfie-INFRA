@@ -89,8 +89,9 @@ services:
       CAPTURE_TOKEN_SECRET: ${CAPTURE_TOKEN_SECRET:-local-development-capture-secret-do-not-use-in-production}
       MEDIA_TOKEN_SECRET: ${MEDIA_TOKEN_SECRET:-local-development-media-secret-do-not-use-in-production-0}
       # 스크립트가 한 디렉터리에 평면으로 내려받으므로 spec §20의 기본 경로
-      # (/models/emotion/v1/...) 대신 실제 위치를 지정한다. K8s에서는 배포가
-      # 버전 디렉터리를 만들어 주므로 기본값을 그대로 쓴다.
+      # (/models/emotion/v1/...) 대신 실제 위치를 지정한다. K8s도 같은 스크립트를
+      # initContainer로 쓰므로 같은 평면 경로를 지정한다
+      # (k8s/base/kustomization.yaml의 backend-env).
       EMOTION_MODEL_PATH: /models/FER_static_ResNet50_AffectNet.pt
       FACE_MODEL_PATH: /models/blaze_face_short_range.tflite
       INFERENCE_CONCURRENCY: "2"
@@ -148,7 +149,8 @@ services:
     image: emoselfie-web:local
     ports: ["127.0.0.1:8080:80"]
     volumes:
-      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      # k8s(k8s/base/kustomization.yaml)와 같은 파일을 본다. 단일 출처 유지.
+      - ./k8s/base/web/default.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       backend:
         condition: service_healthy

@@ -1,0 +1,63 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: local
+
+resources:
+  - ../../base
+  - models-pv.yaml
+
+# 로컬은 arm64 네이티브다. mediapipe 1.0.1과 torch 2.8.0 모두 manylinux_2_28_aarch64
+# 휠이 있고 pyproject.toml이 이미 플랫폼별로 분기하므로, 추론을 그대로 쓴다.
+# 에뮬레이션 없이 네이티브로 돈다.
+#
+#   docker build -t emoselfie-backend:local ../emoselfie-BE
+#   docker build --target models -t emoselfie-models:local ../emoselfie-BE
+#   docker build -t emoselfie-web:local ../emoselfie-FE
+#   k3d image import emoselfie-backend:local emoselfie-models:local emoselfie-web:local -c mycluster
+images:
+  - name: emoselfie-backend
+    newTag: local
+  - name: emoselfie-models
+    newTag: local
+  - name: emoselfie-web
+    newTag: local
+
+# 노드를 --servers-memory 4g 로 t3.medium과 같게 맞췄으므로 3개를 그대로 올려
+# EC2에서 스케줄이 되는지 미리 확인한다. 노드당 2Gi backend 하나씩 들어간다.
+replicas:
+  - name: backend
+    count: 3
+
+configMapGenerator:
+  - name: backend-env
+    behavior: merge
+    literals:
+      - APP_ENV=development
+      - INFERENCE_BACKEND=real
+
+# 로컬 전용 값이다. 운영에서는 클러스터에 직접 만든 Secret을 쓴다.
+# compose.yaml의 기본값과 동일하다.
+secretGenerator:
+  - name: emoselfie-secrets
+    literals:
+      - POSTGRES_USER=emoselfie
+      - POSTGRES_PASSWORD=local-development
+      - POSTGRES_DB=emoselfie
+      - DATABASE_URL=postgresql+asyncpg://emoselfie:local-development@postgres:5432/emoselfie
+      - COOKIE_SECRET=local-development-cookie-secret-do-not-use-in-production-0
+      - CAPTURE_TOKEN_SECRET=local-development-capture-secret-do-not-use-in-production
+      - MEDIA_TOKEN_SECRET=local-development-media-secret-do-not-use-in-production-0
+
+patches:
+  # Longhorn은 노드에 open-iscsi가 필요한데 k3d 노드는 최소 이미지라 설치할 수
+  # 없다(iscsiadm, mount.nfs 둘 다 없음). 대신 호스트 디렉터리를 세 노드에 모두
+  # 물려 같은 ReadWriteMany를 만든다. models-pv.yaml 참고.
+  - target: {kind: PersistentVolumeClaim, name: models}
+    patch: |
+      - op: add
+        path: /spec/storageClassName
+        value: ""
+      - op: add
+        path: /spec/volumeName
+        value: models-k3d-hostpath
