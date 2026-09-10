@@ -203,45 +203,36 @@ kubectl create secret generic emoselfie-secrets -n emoselfie \
 kubectl apply -k k8s/overlays/prod
 ```
 
+## 선행 의존성
+
+`backend-env`의 `REDIS_URL`이 Sentinel 형식이다.
+
+```
+redis+sentinel://redis-sentinel-0.redis-sentinel:26379,\
+                redis-sentinel-1.redis-sentinel:26379,\
+                redis-sentinel-2.redis-sentinel:26379/0/mymaster
+```
+
+`emoselfie-BE`의 `fix/redis-sentinel-url` 이 머지돼야 이 값이 통과한다. 그
+전까지는 `redis_url: RedisDsn` 이 이 형식을 거부해 backend가 startup에서 죽는다.
+
+세 sentinel을 모두 나열하는 이유는 하나가 죽어도 나머지에게 물어볼 수 있어야
+하기 때문이다. StatefulSet pod DNS라 주소가 고정되고, 짧은 이름이라 네임스페이스에
+무관하다.
+
 ## 알려진 한계
 
-**Sentinel failover를 앱이 따라가지 못한다.** 라이브러리가 아니라 설정 계층이
-막고 있다.
+**failover 창의 pub/sub 유실.** Redis pub/sub은 master에서 replica 방향으로만
+전파된다. failover 직후 일부 pod가 아직 옛 master를 보고 있는 몇 초 동안 한쪽
+방향으로만 메시지가 샌다. pub/sub은 저장되지 않으므로 그 창에서 놓친 이벤트는
+재시도로 복구되지 않는다.
 
-`python-socketio`의 `AsyncRedisManager`는 Sentinel을 지원한다.
-`socketio/async_redis_manager.py:110`에 `redis+sentinel://` 분기가 있고,
-`Sentinel(...).master_for(service_name)`으로 마스터를 물어보는 클라이언트를 만든다.
-재연결 시에도 다시 물어본다.
+리액션 누락 정도는 넘어갈 만하지만, 라운드 마감 브로드캐스트가 일부 pod에만
+닿으면 그 pod에 붙은 참가자 화면이 멈춘다. 재연결 시 방/라운드 상태를 다시 받는
+경로를 두면 자동 복구된다. `presence:ping` 위에 얹기 좋다.
 
-그런데 `app/realtime/server.py:75`가 평범한 URL을 넘겨서 `Redis.from_url()`
-가지로 빠진다. 이 커넥션은 특정 주소에 고정되므로 failover 후 강등된 replica에
-계속 붙어 `READONLY You can't write against a read only replica.` 로 실패하고,
-재연결도 같은 주소로 붙어 복구되지 않는다.
-
-`app/core/resources.py:30,35`의 일반 Redis 클라이언트도 같은 방식이다. 이쪽이
-영향이 더 크다 — 방 상태, 라운드, 점수, 분산 락(`lock:room:{roomId}`)을 전부
-다루기 때문이다.
-
-바꾸려면 설정 계층부터 풀어야 한다. pydantic `RedisDsn`이 Sentinel URL을
-거부한다.
-
-```
-redis://redis:6379/0                            -> OK
-redis+sentinel://s1:26379,s2:26379/0/mymaster   -> url_parsing 에러
-```
-
-`allowed_schemes`가 `redis`/`rediss`뿐이고, 스킴을 열어줘도 쉼표로 나열된 다중
-호스트를 파싱하지 못한다. Sentinel은 최소 3대가 필요하니 이 형식을 피할 수 없다.
-
-failover 창에는 pub/sub 특유의 문제도 남는다. Redis pub/sub은 master에서
-replica 방향으로만 전파되므로, 일부 pod가 아직 옛 master를 보고 있는 몇 초 동안
-한쪽 방향만 메시지가 샌다. pub/sub은 저장되지 않아 그 창에서 놓친 이벤트는
-재시도로 복구되지 않는다. 리액션 누락은 넘어갈 만하지만 라운드 마감 브로드캐스트가
-일부 pod에만 닿으면 그 pod에 붙은 참가자 화면이 멈춘다. 재연결 시 방/라운드
-상태를 다시 받는 경로를 두면 자동 복구된다.
-
-현재 `REDIS_URL`은 부트스트랩 master인 `redis-0`을 직접 가리킨다. failover 후에는
-backend 재시작이 필요하다.
+구조적으로 없앨 수 없는 문제다. 관리형 Redis는 failover 창이 짧고 프록시
+엔드포인트를 줘서 클라이언트가 주소 변경을 겪지 않는다.
 
 **postgres는 단일 인스턴스다.** k3s 기본 스토리지가 local-path라 PVC가 특정
 노드에 묶인다. 그 노드가 죽으면 pod가 재스케줄되지 못하고 Pending에 갇힌다.

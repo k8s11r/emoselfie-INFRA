@@ -27,9 +27,8 @@ configMapGenerator:
       - FACE_MODEL_PATH=/models/blaze_face_short_range.tflite
       - INFERENCE_CONCURRENCY=2
       - INFERENCE_TORCH_THREADS=1
-      # Sentinel이 master를 승격시켜도 앱은 따라가지 못한다. python-socketio의
-      # AsyncRedisManager가 sentinel 프로토콜을 모르기 때문이다. 부트스트랩
-      # master인 redis-0을 직접 가리키고, failover 후에는 backend 재시작이
-      # 필요하다. (알려진 한계, README 참고)
-      - REDIS_URL=redis://redis-0.redis:6379/0
+      # Sentinel에게 현재 master를 물어보는 형식이다. master가 승격돼도 앱이
+      # 따라간다. 세 sentinel을 모두 나열하는 이유는 하나가 죽어도 나머지에게
+      # 물어볼 수 있어야 하기 때문이다. 짧은 이름이라 네임스페이스에 무관하다.
+      - REDIS_URL=redis+sentinel://redis-sentinel-0.redis-sentinel:26379,redis-sentinel-1.redis-sentinel:26379,redis-sentinel-2.redis-sentinel:26379/0/mymaster
       - REDIS_MEDIA_URL=redis://redis-media:6379/0
