@@ -95,8 +95,45 @@ os.replace(temporary, target)   # 임시 파일에 받고 원자적으로 교체
 초기화해도 반쯤 쓰인 파일이 보이는 일이 없다. 최악의 경우 두 pod가 각자 받아
 같은 결과를 쓰는 정도다.
 
-**Longhorn 설치가 선행돼야 한다.** `ReadWriteMany`를 지원하는 스토리지가
-필요하고, k3s 기본 local-path는 노드 종속이라 안 된다.
+`ReadWriteMany`를 지원하는 스토리지가 필요하다. k3s 기본 local-path는 노드
+종속이라 안 된다. 로컬과 운영이 다른 방식으로 같은 접근 모드를 만든다.
+
+| | 로컬 k3d | EC2 k3s |
+|---|---|---|
+| 방식 | 호스트 디렉터리를 세 노드에 마운트 | Longhorn 복제 볼륨 |
+| 추가 컴포넌트 | 없음 | Longhorn |
+| PV | `models-k3d-hostpath` (정적) | 동적 프로비저닝 |
+
+### 로컬 (k3d)
+
+k3d는 노드가 전부 같은 Docker 호스트의 컨테이너다. 호스트 디렉터리 하나를 세
+노드에 모두 물리면 그게 곧 공유 스토리지가 된다. 클러스터 생성 시 지정한다.
+
+```bash
+mkdir -p "$HOME/.emoselfie-models"
+k3d cluster create mycluster --servers 3 \
+  --volume "$HOME/.emoselfie-models:/models@all" \
+  -p "80:80@loadbalancer" -p "443:443@loadbalancer"
+```
+
+`--volume` 은 생성 시점 옵션이라 기존 클러스터에 추가할 수 없다. 이미 있으면
+`k3d cluster delete mycluster` 후 다시 만들어야 한다.
+
+서로 다른 노드의 pod 두 개가 같은 파일을 보는 것으로 확인했다.
+
+```
+rwxprobe-...-k42wq   k3d-mycluster-server-2
+rwxprobe-...-kvsmh   k3d-mycluster-server-1
+→ 두 pod 모두 상대가 쓴 파일을 본다
+```
+
+Docker Desktop 메모리가 8.3GB라 backend 3개는 들어가지 않는다(pod당 약 2GB).
+local overlay가 2개로 두며, 2개여도 서로 다른 노드에 흩어져 공유 경로는
+검증된다.
+
+### 운영 (EC2 k3s)
+
+**Longhorn 설치가 선행돼야 한다.**
 
 ```bash
 # 각 EC2 노드에서
@@ -111,9 +148,8 @@ kubectl -n longhorn-system get pods -w    # 전부 Running 확인
 Longhorn 자체가 노드당 수백 MB를 쓴다. t3.medium(4GB) 3대에서는 backend가
 이미 대부분을 차지하므로, 메모리가 빠듯하면 backend replica를 줄여야 할 수 있다.
 
-로컬 k3d에서는 Longhorn을 쓰지 않는다. 노드가 컨테이너라 open-iscsi 설치가
-까다롭다. local overlay가 PVC를 `local-path` + `ReadWriteOnce`로 바꾼다 —
-로컬은 backend replica가 1개뿐이라 노드 종속이어도 충분하다.
+k3d에서는 Longhorn을 쓸 수 없다. 노드가 최소 이미지라 `iscsiadm`도 `mount.nfs`도
+없고 설치할 패키지 관리자도 없다. 위 호스트 디렉터리 방식을 쓰는 이유다.
 
 ### 경로
 
