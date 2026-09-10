@@ -203,6 +203,156 @@ kubectl create secret generic emoselfie-secrets -n emoselfie \
 kubectl apply -k k8s/overlays/prod
 ```
 
+## 오리진과 프로토콜 전달
+
+요청이 backend에 닿기까지 홉이 여럿이다.
+
+```
+브라우저 -> Cloudflare -> cloudflared -> k3d serverlb -> Traefik -> nginx -> backend
+```
+
+**backend는 두 곳에서 오리진을 검사하고, 둘 다 `X-Forwarded-Proto` 에 의존한다.**
+홉이 하나 늘 때마다 이 헤더가 망가질 여지가 생긴다. 실제로 세 군데가 망가져 있었다.
+
+| 검사하는 곳 | 대상 | 판정 기준 |
+|---|---|---|
+| `app/api/middleware.py` | `/api/`, `/media/` 의 non-GET 요청 | `Origin`의 scheme·netloc이 `scope["scheme"]`·`Host` 와 같은가 |
+| engineio (`base_server.py`) | websocket 업그레이드 | `Origin` 이 `{X-Forwarded-Proto}://{Host}` 와 같은가 |
+
+engineio 쪽이 특히 중요한 이유는 소스 주석이 설명한다 — 브라우저의 CORS 보호는
+HTTP에만 걸리고 WebSocket에는 걸리지 않으므로 서버가 직접 막아야 한다.
+
+`Origin` 은 브라우저가 자동으로 붙이고 위조할 수 없다. 반대로 **허용 오리진은
+서버가 정한다.** 이 프로젝트는 `cors_allowed_origins` 를 명시하지 않아 engineio가
+요청 헤더로 추론하는데, 그 재료가 `X-Forwarded-Proto` 다.
+
+```python
+# engineio/async_drivers/asgi.py:217
+environ['wsgi.url_scheme'] = environ.get('HTTP_X_FORWARDED_PROTO', 'http')
+```
+
+`curl` 로 테스트하면 이 문제들이 전부 통과한다. `Origin` 헤더를 보내지 않아
+검사 자체가 건너뛰어지기 때문이다. **브라우저에서만 드러난다.**
+
+### 1. Traefik이 websocket에 `ws` 를 넣는다
+
+Traefik은 업그레이드 요청의 `X-Forwarded-Proto` 를 `http` 가 아니라 `ws` 로 준다.
+engineio가 그대로 스킴으로 쓰므로 허용 오리진이 `ws://host` 가 된다.
+
+| 경로 | X-Forwarded-Proto | 허용 오리진 | 브라우저 Origin | 결과 |
+|---|---|---|---|---|
+| backend 직접 | 없음 | `http://localhost` | `http://localhost` | 101 |
+| Traefik 경유 | `ws` | `ws://localhost` | `http://localhost` | 403 |
+
+nginx의 `$forwarded_proto` map에서 정규화한다.
+
+```nginx
+map $http_x_forwarded_proto $forwarded_proto {
+    default $http_x_forwarded_proto;
+    ''      $scheme;
+    ws      http;
+    wss     https;
+}
+```
+
+같은 수정이 잠재 버그 하나도 막는다. `$cookie_secure_flag` 가 `https` 만 보므로,
+https 경로로 온 websocket은 `wss` 가 되어 Secure 쿠키가 벗겨졌을 것이다. 로컬은
+http라 드러나지 않고 운영에서만 터졌을 문제다.
+
+### 2. Traefik이 cloudflared의 `https` 를 덮어쓴다
+
+Traefik은 기본적으로 들어온 `X-Forwarded-*` 를 믿지 않고 실제 연결 스킴으로
+갈아친다. cloudflared가 `https` 를 보내도 `http` 가 된다.
+
+compose에서는 cloudflared -> nginx 직결이라 이 문제가 없었다. Traefik이 사이에
+끼면서 생겼다.
+
+```
+설정 전:  X-Forwarded-Proto: https -> http
+설정 후:  X-Forwarded-Proto: https -> https   (X-Forwarded-Port: 443 도 함께)
+```
+
+`HelmChartConfig` 로 Traefik이 헤더를 신뢰하게 한다. k3s는 내장 컴포넌트를 Helm
+컨트롤러로 설치하므로 Deployment를 직접 고치면 재조정 때 되돌아간다.
+
+```yaml
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik          # HelmChart와 같은 이름·네임스페이스여야 매칭된다
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    ports:
+      web:
+        forwardedHeaders:
+          insecure: true
+```
+
+`insecure: true` 는 **누가 보내든 `X-Forwarded-*` 를 믿는다**는 뜻이다. 외부에서
+Traefik에 직접 닿을 경로가 없다는 전제에 기댄다. 더 좁히려면 `trustedIPs` 로
+대역을 지정한다.
+
+이 파일은 매니페스트에 넣지 않았다. Kustomize의 `namespace:` 설정이 `kube-system`
+을 덮어써 매칭이 깨지기 때문이다. 로컬은 실행 스크립트가 적용하고, **EC2에서
+Cloudflare Tunnel을 쓴다면 거기서도 따로 적용해야 한다.**
+
+적용은 비동기다. Helm 컨트롤러가 upgrade Job을 돌리고 **그다음에** Deployment를
+갱신하므로, 바로 `rollout status` 를 부르면 옛 Deployment가 아직 안정 상태라
+즉시 성공을 반환한다. 스펙에 플래그가 나타날 때까지 기다려야 한다.
+
+```bash
+kubectl -n kube-system get deploy traefik \
+  -o jsonpath='{.spec.template.spec.containers[0].args}' | grep -q 'forwardedHeaders.insecure'
+```
+
+### 3. backend가 `--proxy-headers` 없이 뜬다
+
+이미지 기본 CMD에는 이 인자가 없다. 그러면 uvicorn이 `X-Forwarded-Proto` 와
+무관하게 `scope["scheme"]` 을 항상 `http` 로 둔다. `middleware.py` 의
+`parsed.scheme == scope["scheme"]` 비교가 어긋나 https 요청이 `FORBIDDEN_ORIGIN`
+으로 막힌다.
+
+```json
+{"error": {"code": "FORBIDDEN_ORIGIN", "message": "같은 사이트에서 다시 시도해 주세요"}}
+```
+
+compose는 이 인자를 주고 있었는데(PR #3) 매니페스트로 옮기며 빠졌다. `base` 의
+backend에 같은 인자를 넣었다.
+
+```yaml
+command: ["uvicorn", "app.main:create_app", "--factory",
+          "--host", "0.0.0.0", "--port", "8000",
+          "--timeout-graceful-shutdown", "10",
+          "--proxy-headers", "--forwarded-allow-ips=*"]
+```
+
+backend는 포트를 노출하지 않아 nginx를 통해서만 닿으므로 신뢰 범위를 넓혀도 된다.
+
+### 검증
+
+로컬 http 직접 접속:
+
+```
+Origin: http://localhost                        -> 201
+Origin: https://localhost (스킴 불일치)          -> FORBIDDEN_ORIGIN
+X-Forwarded-Proto: https + 일치하는 Origin/Host  -> 201
+같은 조건에서 Origin만 다른 사이트                -> FORBIDDEN_ORIGIN  (차단 정상)
+```
+
+실제 Cloudflare Quick Tunnel:
+
+```
+GET  /                     200
+POST /api/rooms            201  {"slug":"4nc6SVXHRV0J","status":"waiting",...}
+websocket 업그레이드         101 Switching Protocols
+Set-Cookie                 ... SameSite=lax; Secure
+```
+
+http로 직접 접속하면 `Secure` 가 벗겨지는 것도 그대로다(Safari가 http 오리진에
+Secure 쿠키를 저장하지 않아 필요한 동작). PR #3이 의도한 동작이 여기서 처음으로
+실증됐다.
+
 ## 선행 의존성
 
 `backend-env`의 `REDIS_URL`이 Sentinel 형식이다.
@@ -213,8 +363,8 @@ redis+sentinel://redis-sentinel-0.redis-sentinel:26379,\
                 redis-sentinel-2.redis-sentinel:26379/0/mymaster
 ```
 
-`emoselfie-BE`의 `fix/redis-sentinel-url` 이 머지돼야 이 값이 통과한다. 그
-전까지는 `redis_url: RedisDsn` 이 이 형식을 거부해 backend가 startup에서 죽는다.
+`emoselfie-BE#7` 이 설정 계층을 열어준 뒤에야 이 값이 통과한다(머지 완료).
+그 전에는 `redis_url: RedisDsn` 이 이 형식을 거부해 backend가 startup에서 죽었다.
 
 세 sentinel을 모두 나열하는 이유는 하나가 죽어도 나머지에게 물어볼 수 있어야
 하기 때문이다. StatefulSet pod DNS라 주소가 고정되고, 짧은 이름이라 네임스페이스에
@@ -245,7 +395,8 @@ initContainer가 처리하므로 재시도에 기대지 않는다.
 
 ## 검증 기록
 
-로컬 k3d(3노드)에서 전체 스택을 띄우고 확인한 내용이다.
+로컬 k3d(3노드)에서 전체 스택을 띄우고 확인한 내용이다. 오리진·프로토콜 전달
+관련 검증은 위 "오리진과 프로토콜 전달" 절에 있다.
 
 **노드 분산.** backend 3개가 노드 하나씩에 흩어졌다. `podAntiAffinity`가 동작한다.
 
@@ -289,55 +440,6 @@ readinessProbe가 걸려 있다. 이름이 풀리는 시점이 곧 `pg_isready` 
 
 busybox는 1.85MB고 k3s가 번들로 갖고 있어 노드에 이미 있다. postgres 이미지는
 108MB이고, migrate가 postgres-0과 다른 노드에 스케줄되면 그만큼 받아야 한다.
-
-**Traefik의 X-Forwarded-Proto: ws.** 브라우저에서 websocket 연결이 403으로
-거부됐다. Traefik(k3s 기본 Ingress)이 업그레이드 요청에 `http`가 아니라 `ws`를
-넣기 때문이다. engineio는 그 값을 그대로 스킴으로 써서 허용 오리진을 계산한다.
-
-```python
-# engineio/async_drivers/asgi.py:217
-environ['wsgi.url_scheme'] = environ.get('HTTP_X_FORWARDED_PROTO', 'http')
-```
-
-| 경로 | X-Forwarded-Proto | 허용 오리진 | 브라우저 Origin | 결과 |
-|---|---|---|---|---|
-| backend 직접 | 없음 | `http://localhost` | `http://localhost` | 101 |
-| Traefik 경유 | `ws` | `ws://localhost` | `http://localhost` | 403 |
-
-nginx의 `$forwarded_proto` map에서 `ws` -> `http`, `wss` -> `https`로 정규화해
-해결했다. 같은 수정이 잠재 버그 하나도 막는다. `$cookie_secure_flag` 가 `https`
-만 보기 때문에, Cloudflare Tunnel 같은 https 경로로 온 websocket은
-`X-Forwarded-Proto: wss` 가 되어 Secure 쿠키가 벗겨졌을 것이다.
-
-**Cloudflare Tunnel 경유 시 FORBIDDEN_ORIGIN.** 터널을 통해 방을 만들면 403이
-났다. 원인이 둘이었고 둘 다 compose에는 있던 것이 매니페스트로 넘어오며 빠진
-것이다.
-
-첫째, Traefik이 cloudflared가 보낸 `X-Forwarded-Proto: https` 를 실제 연결
-스킴(`http`)으로 덮어썼다. `HelmChartConfig` 로 `forwardedHeaders.insecure` 를
-켜서 해결한다(로컬 실행 스크립트가 적용한다).
-
-```
-설정 전:  X-Forwarded-Proto: https -> http
-설정 후:  X-Forwarded-Proto: https -> https
-```
-
-둘째, backend가 이미지 기본 CMD로 떠서 `--proxy-headers` 가 없었다. 그러면
-uvicorn이 `scope["scheme"]` 을 항상 `http` 로 두고, `middleware.py` 의
-`parsed.scheme == scope["scheme"]` 비교가 어긋나 https 요청이 FORBIDDEN_ORIGIN이
-된다. compose는 이 인자를 주고 있었다(PR #3). base의 backend에 같은 인자를 넣었다.
-
-실제 Quick Tunnel로 확인했다.
-
-```
-GET  /                          200
-POST /api/rooms                 201  {"slug":"4nc6SVXHRV0J", ...}
-websocket 업그레이드              101 Switching Protocols
-Set-Cookie                      ... SameSite=lax; Secure     <- https에서 유지
-```
-
-http로 직접 접속하면 `Secure` 가 벗겨지는 것도 그대로다. PR #3이 의도한 동작이
-처음으로 실증됐다.
 
 **redis-0 복귀 시 과도 상태.** 재생성된 redis-0이 몇 초간 master로 떴다.
 Sentinel이 아직 failover를 끝내지 않아 `start.sh` 의 조회가 옛 답을 받았기
