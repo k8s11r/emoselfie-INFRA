@@ -8,7 +8,12 @@
 # 동시에 초기화해도 안전하다.
 #
 # ReadWriteMany는 여러 노드의 pod가 같은 볼륨을 동시에 붙일 수 있다는 뜻이다.
-# storageClassName은 오버레이가 지정한다 (prod: longhorn, local: local-path).
+# 여기서 storageClassName을 비워두는 것은 의도적이다. 어떤 스토리지로 이걸
+# 만족시킬지는 환경마다 다르므로 오버레이가 채운다.
+#   prod  -> longhorn. 동적 프로비저닝, 노드 간 복제 볼륨
+#   local -> "" + volumeName. k3d 노드가 같은 Docker 호스트의 컨테이너라
+#            호스트 디렉터리 하나를 세 노드에 물려 쓴다
+#            (k8s/overlays/local/models-pv.yaml)
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
