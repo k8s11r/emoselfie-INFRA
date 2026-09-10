@@ -19,13 +19,13 @@ project/
 └── emoselfie-FE/
 ```
 
-**모델 가중치를 먼저 준비해야 한다.** 94MB이고 저장소에 없다.
+모델 가중치(94MB)는 저장소에 없지만 **따로 준비할 필요는 없다.** `prepare-models` 서비스가 백엔드보다 먼저 실행되어 내려받고 sha256을 검증한다. 이미 있으면 검증만 하고 1초 안에 끝난다.
+
+받아둔 파일은 `emoselfie-BE/.models/`에 남으므로 네이티브 개발과 캐시를 공유한다. 같은 스크립트를 직접 돌려도 된다.
 
 ```bash
 cd ../emoselfie-BE && uv run python scripts/prepare_models.py
 ```
-
-없으면 백엔드가 startup에서 실패한다. 의도된 동작이다([Backend Guidelines §19](../emoselfie-BE/guidelines.md)).
 
 ## 구성
 
@@ -57,6 +57,7 @@ cd ../emoselfie-BE && uv run python scripts/prepare_models.py
 |---|---|
 | `web` | nginx. 경로를 갈라 보내고 FE 정적 빌드를 서빙한다 |
 | `backend` | FastAPI + Socket.IO + 추론 |
+| `prepare-models` | 백엔드보다 먼저 모델을 내려받고 검증한다. K8s의 init container와 같은 역할 |
 | `migrate` | 백엔드보다 먼저 한 번 돌고 끝나는 alembic 마이그레이션 |
 | `postgres` | 복원과 무결성 |
 | `redis` | 실시간 조율. `noeviction` |
