@@ -10,6 +10,54 @@ k8s/
     └── prod/             # EC2 k3s (amd64, 추론 real)
 ```
 
+## Kustomize 읽는 법
+
+Kustomize가 처음이면 이것만 알면 아래 내용을 읽을 수 있다.
+
+**`kustomization.yaml` 은 쿠버네티스 객체가 아니다.** 클러스터에 올라가지 않는다.
+"이 디렉터리에서 최종 YAML을 어떻게 조립할지" 적은 설명서다. `kubectl apply -k`
+가 이 설명서대로 조립한 결과를 apply한다. 그래서 `-f` 로 주면 실패한다.
+
+```bash
+kubectl kustomize k8s/overlays/local    # 조립 결과를 출력만 (적용 안 함)
+kubectl apply -k k8s/overlays/local     # 조립 + 적용
+```
+
+**`resources` 는 조립에 넣을 목록이다.** 여기 없는 파일은 같은 디렉터리에 있어도
+무시된다. 파일뿐 아니라 다른 kustomization 디렉터리도 넣을 수 있고, 오버레이가
+base를 끌어오는 방식이 그것이다.
+
+```yaml
+# overlays/local/kustomization.yaml
+resources:
+  - ../../base        # base의 조립 결과를 통째로 가져오고
+  - models-pv.yaml    # 로컬에만 필요한 것을 더한다
+```
+
+**오버레이는 base를 복사하지 않고 차이만 얹는다.** `namespace`(네임스페이스 박기),
+`images`(태그 교체), `replicas`(개수 교체), `patches`(임의 필드 수정),
+`configMapGenerator`/`secretGenerator`(설정값). 그래서 공통 변경은 base 한 곳만
+고치면 양쪽에 반영된다.
+
+**generator가 만든 ConfigMap/Secret은 이름 뒤에 내용 해시가 붙는다.** 이게 중요한
+이유는, 같은 이름으로 내용만 바꾸면 pod 템플릿이 그대로라 **쿠버네티스가 변화를
+감지하지 못하고 pod가 재시작되지 않기 때문이다.** nginx처럼 기동 시 설정을 한 번
+읽는 프로세스는 옛 설정으로 계속 돈다.
+
+```
+nginx/default.conf 수정
+  -> nginx-conf-276cgdm9t8 에서 nginx-conf-bh629bffbh 로 이름이 바뀜
+  -> web Deployment의 volume 참조가 바뀜 = pod 템플릿 변경
+  -> 롤링 업데이트로 새 설정이 적용됨
+```
+
+매니페스트에는 `name: nginx-conf` 라고만 쓰면 된다. 참조 쪽 이름은 Kustomize가
+결과물에서 알아서 고쳐준다.
+
+한 가지 부작용이 있다. 옛 ConfigMap이 클러스터에 그대로 남는다. Kustomize는 새
+이름으로 만들 뿐 옛것을 지우지 않으므로, 배포를 반복하면 쌓인다. 몇 KB짜리라
+급하진 않지만 가끔 정리하면 좋다.
+
 ## 로컬 (k3d)
 
 로컬은 arm64 네이티브다. mediapipe 1.0.1과 torch 2.8.0 모두 `manylinux_2_28_aarch64`
