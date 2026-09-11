@@ -350,12 +350,32 @@ spec:
     ports:
       web:
         forwardedHeaders:
-          insecure: true
+          trustedIPs:
+            - "10.42.0.0/16"     # 로컬 k3d. 운영은 VPC CIDR
 ```
 
-`insecure: true` 는 **누가 보내든 `X-Forwarded-*` 를 믿는다**는 뜻이다. 외부에서
-Traefik에 직접 닿을 경로가 없다는 전제에 기댄다. 더 좁히려면 `trustedIPs` 로
-대역을 지정한다.
+`insecure: true` 라는 값도 있지만 쓰지 않는다. **누가 보내든 `X-Forwarded-*` 를
+믿는다**는 뜻이라, Traefik에 앞단을 거치지 않고 직접 닿을 경로가 없다는 전제에
+기댄다. 운영(EC2)에서는 노드 포트가 VPC 안에서 열리므로 그 전제가 약해진다.
+
+`trustedIPs` 로 대역을 좁히고 **보안 그룹으로 2중 방어**하는 쪽을 쓴다. 로컬과
+운영이 같은 모양이 되는 것도 이점이다.
+
+| 환경 | 값 | 근거 |
+|---|---|---|
+| 로컬 k3d | `10.42.0.0/16` | pod CIDR. 요청이 `svclb` DaemonSet을 거쳐 오므로 Traefik이 보는 피어가 이 대역 안이다 |
+| 운영 EC2 | VPC CIDR | ALB ENI가 VPC 안에 있다 |
+
+로컬 값은 실제로 확인했다. `X-Forwarded-Proto: https` 와 일치하는 `Origin`/`Host` 를
+넣은 요청이 통과하고, `Origin` 만 다른 사이트로 바꾸면 차단된다.
+
+```
+POST /api/rooms  (X-Forwarded-Proto: https, Origin/Host 일치)  -> 201
+websocket 업그레이드                                            -> 101
+POST /api/rooms  (Origin 만 다른 사이트)                        -> FORBIDDEN_ORIGIN
+GET  /  와 http Origin 경로                                     -> 200 / 201 (영향 없음)
+Set-Cookie (http 접속)                                          -> Secure 없음 (정상)
+```
 
 이 파일은 매니페스트에 넣지 않았다. Kustomize의 `namespace:` 설정이 `kube-system`
 을 덮어써 매칭이 깨지기 때문이다. 로컬은 실행 스크립트가 적용한다.
