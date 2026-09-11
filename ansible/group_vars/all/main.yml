@@ -1,0 +1,13 @@
+aws_region: ap-northeast-2
+aws_account_id: "082139775699"
+
+ecr_repository_backend: emoselfie-be
+ecr_repository_models: emoselfie-be-models
+ecr_repository_web: emoselfie-fe
+
+# k8s/overlays/prod의 models PVC가 이 StorageClass를 사용한다.
+longhorn_version: v1.12.1
+
+expected_node_count: 3
+kubernetes_namespace: emoselfie
+

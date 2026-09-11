@@ -205,7 +205,7 @@ sudo apt-get install -y open-iscsi nfs-common
 sudo systemctl enable --now iscsid
 
 # 클러스터에
-kubectl apply -f https://raw.githubusercontent.com/longhorn/longhorn/v1.7.2/deploy/longhorn.yaml
+kubectl apply -f https://raw.githubusercontent.com/longhorn/longhorn/v1.12.1/deploy/longhorn.yaml
 kubectl -n longhorn-system get pods -w    # 전부 Running 확인
 ```
 
