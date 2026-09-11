@@ -205,14 +205,21 @@ kubectl apply -k k8s/overlays/prod
 
 ## 오리진과 프로토콜 전달
 
-요청이 backend에 닿기까지 홉이 여럿이다.
+요청이 backend에 닿기까지 홉이 여럿이고, **홉이 하나 늘 때마다
+`X-Forwarded-Proto` 가 망가질 여지가 생긴다.**
 
 ```
-브라우저 -> Cloudflare -> cloudflared -> k3d serverlb -> Traefik -> nginx -> backend
+로컬:  브라우저 -> k3d serverlb -> Traefik -> nginx -> backend
+터널:  브라우저 -> Cloudflare -> cloudflared -> k3d serverlb -> Traefik -> nginx -> backend
+ALB:   브라우저 -> ALB -> Traefik -> nginx -> backend
 ```
 
-**backend는 두 곳에서 오리진을 검사하고, 둘 다 `X-Forwarded-Proto` 에 의존한다.**
-홉이 하나 늘 때마다 이 헤더가 망가질 여지가 생긴다. 실제로 세 군데가 망가져 있었다.
+**여기 적힌 문제들은 Cloudflare 전용이 아니다.** 앞단에서 TLS를 종료하는 구성이면
+ALB든 Cloudflare Tunnel이든 똑같이 겪는다. 이 앱은 카메라 접근(`getUserMedia`)
+때문에 secure context가 필수라 운영에서는 어느 쪽이든 https다 — `localhost` 만
+예외다. AWS 구성이 무엇으로 정해지든 아래 세 가지는 필요하다.
+
+backend는 두 곳에서 오리진을 검사하고, **둘 다 `X-Forwarded-Proto` 에 의존한다.**
 
 | 검사하는 곳 | 대상 | 판정 기준 |
 |---|---|---|
@@ -236,6 +243,9 @@ environ['wsgi.url_scheme'] = environ.get('HTTP_X_FORWARDED_PROTO', 'http')
 
 ### 1. Traefik이 websocket에 `ws` 를 넣는다
 
+**앞단과 무관하다.** Traefik이 기본 Ingress인 이상 로컬이든 EC2든 그대로 재현되고,
+평범한 `http://localhost` 접속에서 처음 발견했다.
+
 Traefik은 업그레이드 요청의 `X-Forwarded-Proto` 를 `http` 가 아니라 `ws` 로 준다.
 engineio가 그대로 스킴으로 쓰므로 허용 오리진이 `ws://host` 가 된다.
 
@@ -257,12 +267,15 @@ map $http_x_forwarded_proto $forwarded_proto {
 
 같은 수정이 잠재 버그 하나도 막는다. `$cookie_secure_flag` 가 `https` 만 보므로,
 https 경로로 온 websocket은 `wss` 가 되어 Secure 쿠키가 벗겨졌을 것이다. 로컬은
-http라 드러나지 않고 운영에서만 터졌을 문제다.
+http라 드러나지 않고 **운영에서만 터졌을 문제다.**
 
-### 2. Traefik이 cloudflared의 `https` 를 덮어쓴다
+### 2. Traefik이 앞단의 `https` 를 덮어쓴다
 
 Traefik은 기본적으로 들어온 `X-Forwarded-*` 를 믿지 않고 실제 연결 스킴으로
-갈아친다. cloudflared가 `https` 를 보내도 `http` 가 된다.
+갈아친다. 앞단이 `https` 를 보내도 `http` 가 된다.
+
+**ALB를 써도 같다.** ALB가 `X-Forwarded-Proto: https` 를 보내면 Traefik이 똑같이
+덮어쓴다. TLS를 Traefik 자신이 종료하는 구성(cert-manager)만 예외다.
 
 compose에서는 cloudflared -> nginx 직결이라 이 문제가 없었다. Traefik이 사이에
 끼면서 생겼다.
@@ -294,8 +307,10 @@ Traefik에 직접 닿을 경로가 없다는 전제에 기댄다. 더 좁히려�
 대역을 지정한다.
 
 이 파일은 매니페스트에 넣지 않았다. Kustomize의 `namespace:` 설정이 `kube-system`
-을 덮어써 매칭이 깨지기 때문이다. 로컬은 실행 스크립트가 적용하고, **EC2에서
-Cloudflare Tunnel을 쓴다면 거기서도 따로 적용해야 한다.**
+을 덮어써 매칭이 깨지기 때문이다. 로컬은 실행 스크립트가 적용한다.
+
+**EC2에서도 따로 적용해야 한다.** 앞단(ALB든 Cloudflare든)이 TLS를 종료하는 한
+같은 문제가 재현된다. 저장소에 없으니 배포 절차에 넣거나 별도 파일로 빼야 한다.
 
 적용은 비동기다. Helm 컨트롤러가 upgrade Job을 돌리고 **그다음에** Deployment를
 갱신하므로, 바로 `rollout status` 를 부르면 옛 Deployment가 아직 안정 상태라
@@ -308,7 +323,8 @@ kubectl -n kube-system get deploy traefik \
 
 ### 3. backend가 `--proxy-headers` 없이 뜬다
 
-이미지 기본 CMD에는 이 인자가 없다. 그러면 uvicorn이 `X-Forwarded-Proto` 와
+이것도 TLS 종료 지점이 앞단인 모든 구성에 해당한다. 이미지 기본 CMD에는 이 인자가
+없다. 그러면 uvicorn이 `X-Forwarded-Proto` 와
 무관하게 `scope["scheme"]` 을 항상 `http` 로 둔다. `middleware.py` 의
 `parsed.scheme == scope["scheme"]` 비교가 어긋나 https 요청이 `FORBIDDEN_ORIGIN`
 으로 막힌다.
@@ -340,7 +356,7 @@ X-Forwarded-Proto: https + 일치하는 Origin/Host  -> 201
 같은 조건에서 Origin만 다른 사이트                -> FORBIDDEN_ORIGIN  (차단 정상)
 ```
 
-실제 Cloudflare Quick Tunnel:
+실제 Cloudflare Quick Tunnel(앞단 TLS 종료 구성의 한 예):
 
 ```
 GET  /                     200
