@@ -1,0 +1,12 @@
+# 현재 공인 IPv4를 /32 CIDR로 입력합니다.
+# macOS/Linux: curl -4 https://checkip.amazonaws.com
+admin_cidr = "203.0.113.10/32"
+
+# 이 키페어는 ap-northeast-2에 이미 존재합니다.
+key_name = "project1_key"
+
+# 기본값을 바꿀 때만 주석을 해제합니다.
+# instance_type   = "t3.medium"
+# root_volume_size = 30
+# k3s_version     = "v1.36.4+k3s1"
+
