@@ -39,6 +39,21 @@ spec:
       containers:
         - name: backend
           image: emoselfie-backend
+          # 앞단에서 TLS를 종료하는 모든 구성에 필요하다(ALB, Cloudflare Tunnel,
+          # cert-manager를 붙인 Traefik 등). 이 앱은 카메라 접근 때문에 secure
+          # context가 필수라 운영에서는 어느 쪽이든 https다.
+          #
+          # 기본 CMD는 --proxy-headers가 없어 uvicorn이 X-Forwarded-Proto와 무관하게
+          # scope["scheme"]을 항상 http로 둔다. 그러면 middleware.py의 same-origin
+          # 검사가 parsed.scheme == scope["scheme"] 에서 어긋나, https로 들어온
+          # /api/ POST가 전부 FORBIDDEN_ORIGIN으로 막힌다.
+          #
+          # backend는 포트를 노출하지 않아 nginx를 통해서만 닿으므로 신뢰 범위를
+          # 넓혀도 된다. compose도 같은 이유로 같은 인자를 준다.
+          command: ["uvicorn", "app.main:create_app", "--factory",
+                    "--host", "0.0.0.0", "--port", "8000",
+                    "--timeout-graceful-shutdown", "10",
+                    "--proxy-headers", "--forwarded-allow-ips=*"]
           envFrom:
             - configMapRef: {name: backend-env}
             - secretRef: {name: emoselfie-secrets}
