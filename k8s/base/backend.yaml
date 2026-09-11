@@ -33,6 +33,18 @@ spec:
       initContainers:
         - name: prepare-models
           image: emoselfie-models
+          # NamedTemporaryFile의 기본 권한은 0600이다. initContainer(root)가
+          # 만든 모델을 runtime의 appuser(UID 10001)가 읽을 수 있도록, 검증이
+          # 끝난 비밀 데이터가 아닌 모델 파일만 0644로 바꾼다. 기존 PVC에 이미
+          # root:root 0600 파일이 남아 있어도 root가 먼저 검증하므로 복구된다.
+          command:
+            - sh
+            - -ec
+            - |
+              python scripts/prepare_models.py --directory /models
+              chmod 0644 \
+                /models/FER_static_ResNet50_AffectNet.pt \
+                /models/blaze_face_short_range.tflite
           volumeMounts:
             - name: models
               mountPath: /models
