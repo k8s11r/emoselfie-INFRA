@@ -1,0 +1,82 @@
+# EC2 k3s 인프라
+
+서울 리전의 기존 기본 VPC에 EC2 세 대를 만들고, 부팅 과정에서 k3s 클러스터를
+구성한다.
+
+- server 1대, agent 2대
+- Ubuntu 24.04 amd64 최신 AMI
+- 기본 `t3.medium`, 노드별 암호화된 gp3 30 GiB
+- 기존 EC2 키페어 `project1_key` 사용
+- 서로 다른 가용 영역의 기본 퍼블릭 서브넷 3개 사용
+- 노드 IAM 역할에 `AmazonEC2ContainerRegistryReadOnly` 연결
+- Longhorn의 호스트 선행 패키지(`open-iscsi`, `nfs-common`) 설치
+
+기존 `team1_first_project` 인스턴스는 이 Terraform 상태에 포함하지 않으므로
+수정하거나 삭제하지 않는다.
+
+## 사전 조건
+
+- AWS CLI가 `terraform` IAM 사용자로 인증돼 있어야 한다.
+- 이 사용자에게 EC2 리소스와 제한된 IAM 역할/인스턴스 프로파일을 만들고
+  `iam:PassRole`을 수행할 권한이 있어야 한다.
+- `project1_key.pem` 개인 키를 로컬에서 보관하고 있어야 한다. Terraform은 AWS에
+  등록된 공개 키 이름만 참조하며 개인 키 파일을 읽거나 저장하지 않는다.
+
+## 실행
+
+```bash
+cd terraform
+cp terraform.tfvars.example terraform.tfvars
+```
+
+`terraform.tfvars`의 `admin_cidr`를 현재 공인 IPv4의 `/32` CIDR로 바꾼다. 이 값은
+SSH(22)와 Kubernetes API(6443)에 접근할 수 있는 범위다. `0.0.0.0/0`은 검증에서
+거부한다.
+
+```bash
+terraform init
+terraform plan -out=tfplan
+terraform apply tfplan
+```
+
+`apply`가 끝났다고 k3s 부팅까지 끝난 것은 아니다. 일반적으로 몇 분이 더 필요하다.
+진행 상태는 server에서 확인한다.
+
+```bash
+ssh -i /실제/경로/project1_key.pem ubuntu@$(terraform output -raw server_public_ip)
+sudo tail -f /var/log/emoselfie-bootstrap.log
+sudo k3s kubectl get nodes -o wide
+```
+
+로컬 kubeconfig 복사 명령은 다음 출력에서 확인한다.
+
+```bash
+terraform output -raw kubeconfig_command
+```
+
+출력의 `/path/to/project1_key.pem`을 실제 개인 키 경로로 바꿔 실행한다.
+
+## 중요한 동작
+
+- 정확한 `k3s_version`을 지정하지 않으면 생성 시점의 `stable` 채널을 설치한다.
+  운영에 들어가기 전 실제 설치 버전을 확인하고 변수에 고정하는 것이 좋다.
+- 자동 생성된 클러스터 조인 토큰과 전체 user data가 로컬 Terraform state에
+  저장된다. state를 Git에 커밋하거나 외부에 공유하면 안 된다.
+- `user_data`가 바뀌면 해당 EC2가 교체된다. 먼저 `terraform plan`의 교체 표시를
+  확인한다.
+- 인스턴스에는 고정 Elastic IP를 붙이지 않았다. 인스턴스를 중지 후 시작하면
+  공인 IP가 바뀔 수 있다. 도메인과 운영 진입점은 이후 NLB 또는 Elastic IP 설계와
+  함께 확정한다.
+- EC2 인스턴스 프로파일은 ECR API 권한만 제공한다. kubelet이 만료되는 ECR
+  인증을 자동 갱신하도록 하는 credential provider 구성은 애플리케이션 배포
+  단계에서 별도로 추가하고 검증한다.
+
+## 삭제
+
+```bash
+terraform plan -destroy
+terraform destroy
+```
+
+이 디렉터리가 만든 세 노드, 보안 그룹, IAM 역할과 인스턴스 프로파일만 삭제한다.
+기존 `team1_first_project`는 대상이 아니다.
