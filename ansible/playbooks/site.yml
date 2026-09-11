@@ -1,0 +1,467 @@
+---
+- name: Deploy Emoselfie to the Terraform-managed k3s cluster
+  hosts: localhost
+  gather_facts: false
+
+  # inventory가 ansible/inventory/ 아래에 있어 상위의 group_vars를 자동으로
+  # 발견하지 못하므로 배포 설정과 Vault를 명시적으로 불러온다.
+  vars_files:
+    - "{{ playbook_dir }}/../group_vars/all/main.yml"
+    - "{{ playbook_dir }}/../group_vars/all/vault.yml"
+
+  vars:
+    repo_root: "{{ playbook_dir }}/../.."
+    terraform_dir: "{{ repo_root }}/terraform"
+    generated_dir: "{{ playbook_dir }}/../.generated"
+    kubeconfig_path: "{{ generated_dir }}/k3s-prod.yaml"
+    ssh_private_key_file: "{{ repo_root }}/../project1_key.pem"
+    ecr_registry: "{{ aws_account_id }}.dkr.ecr.{{ aws_region }}.amazonaws.com"
+    longhorn_manifest_url: "https://raw.githubusercontent.com/longhorn/longhorn/{{ longhorn_version }}/deploy/longhorn.yaml"
+    postgres_user: emoselfie
+    postgres_database: emoselfie
+
+  tasks:
+    - name: Check the SSH private key
+      ansible.builtin.stat:
+        path: "{{ ssh_private_key_file }}"
+      register: ssh_key
+
+    - name: Validate the SSH key and image tags
+      ansible.builtin.assert:
+        that:
+          - ssh_key.stat.exists
+          - ssh_key.stat.isreg
+          - (backend_tag | default('')) is match('^sha-[0-9a-f]{12}$')
+          - (frontend_tag | default('')) is match('^sha-[0-9a-f]{12}$')
+        fail_msg: >-
+          project1_key.pem과 sha-로 시작하는 소문자 16진수 12자리 BE/FE 태그가
+          필요합니다. ansible/README.md를 확인하십시오.
+
+    # 실제 비밀값은 출력하지 않고 검증 결과만 다음 assert 태스크에 전달한다.
+    - name: Check Vault values without exposing them
+      ansible.builtin.set_fact:
+        vault_postgres_password_valid: >-
+          {{ (vault_postgres_password | default('') | length) >= 32 }}
+        vault_cookie_secret_valid: >-
+          {{ (vault_cookie_secret | default('') | length) >= 32 }}
+        vault_capture_token_secret_valid: >-
+          {{ (vault_capture_token_secret | default('') | length) >= 32 }}
+        vault_media_token_secret_valid: >-
+          {{ (vault_media_token_secret | default('') | length) >= 32 }}
+        vault_signing_secrets_distinct: >-
+          {{ [
+            vault_cookie_secret | default(''),
+            vault_capture_token_secret | default(''),
+            vault_media_token_secret | default('')
+          ] | unique | length == 3 }}
+      no_log: true
+
+    - name: Validate the PostgreSQL password
+      ansible.builtin.assert:
+        that: vault_postgres_password_valid
+        fail_msg: >-
+          Vault의 vault_postgres_password가 없거나 32자보다 짧습니다.
+
+    - name: Validate the cookie signing secret
+      ansible.builtin.assert:
+        that: vault_cookie_secret_valid
+        fail_msg: >-
+          Vault의 vault_cookie_secret이 없거나 32자보다 짧습니다.
+
+    - name: Validate the capture-token signing secret
+      ansible.builtin.assert:
+        that: vault_capture_token_secret_valid
+        fail_msg: >-
+          Vault의 vault_capture_token_secret이 없거나 32자보다 짧습니다.
+
+    - name: Validate the media-token signing secret
+      ansible.builtin.assert:
+        that: vault_media_token_secret_valid
+        fail_msg: >-
+          Vault의 vault_media_token_secret이 없거나 32자보다 짧습니다.
+
+    - name: Validate that signing secrets are different
+      ansible.builtin.assert:
+        that: vault_signing_secrets_distinct
+        fail_msg: >-
+          cookie, capture-token, media-token 서명 키는 모두 서로 다른 값이어야 합니다.
+
+    - name: Check required local commands
+      ansible.builtin.command:
+        argv: [which, "{{ item }}"]
+      loop:
+        - terraform
+        - kubectl
+        - aws
+        - scp
+      changed_when: false
+
+    - name: Read the k3s server public IP from Terraform
+      ansible.builtin.command:
+        argv:
+          - terraform
+          - "-chdir={{ terraform_dir }}"
+          - output
+          - -raw
+          - server_public_ip
+      register: terraform_server_ip
+      changed_when: false
+
+    - name: Store the server address
+      ansible.builtin.set_fact:
+        server_public_ip: "{{ terraform_server_ip.stdout | trim }}"
+
+    - name: Wait for SSH on the k3s server
+      ansible.builtin.wait_for:
+        host: "{{ server_public_ip }}"
+        port: 22
+        timeout: 600
+        connect_timeout: 5
+
+    - name: Create the local generated directory
+      ansible.builtin.file:
+        path: "{{ generated_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Download the administrator kubeconfig
+      ansible.builtin.command:
+        argv:
+          - scp
+          - -i
+          - "{{ ssh_private_key_file }}"
+          - -o
+          - StrictHostKeyChecking=accept-new
+          - "ubuntu@{{ server_public_ip }}:/etc/rancher/k3s/k3s.yaml"
+          - "{{ kubeconfig_path }}"
+      register: kubeconfig_copy
+      retries: 30
+      delay: 10
+      until: kubeconfig_copy.rc == 0
+      changed_when: true
+
+    - name: Point the kubeconfig at the public server address
+      ansible.builtin.replace:
+        path: "{{ kubeconfig_path }}"
+        regexp: 'https://127\.0\.0\.1:6443'
+        replace: "https://{{ server_public_ip }}:6443"
+        mode: "0600"
+
+    - name: Wait until all Terraform nodes have joined
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ kubeconfig_path }}"
+          - get
+          - nodes
+          - -o
+          - json
+      register: cluster_nodes
+      retries: 60
+      delay: 10
+      # 점 표기법의 `.items`는 JSON 키가 아니라 Python dict.items 메서드로
+      # 해석되므로 대괄호로 Kubernetes 응답의 items 키를 명시한다.
+      until: ((cluster_nodes.stdout | from_json)['items'] | length) == expected_node_count
+      changed_when: false
+
+    - name: Wait until all k3s nodes are Ready
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ kubeconfig_path }}"
+          - wait
+          - --for=condition=Ready
+          - nodes
+          - --all
+          - --timeout=10m
+      changed_when: false
+
+    - name: Install or update Longhorn
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ kubeconfig_path }}"
+          - apply
+          - -f
+          - "{{ longhorn_manifest_url }}"
+      register: longhorn_apply
+      changed_when: >-
+        ' created' in longhorn_apply.stdout or
+        ' configured' in longhorn_apply.stdout
+
+    - name: Wait for Longhorn pods
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ kubeconfig_path }}"
+          - wait
+          - --namespace
+          - longhorn-system
+          - --for=condition=Ready
+          - pod
+          - --all
+          - --timeout=10m
+      changed_when: false
+
+    - name: Create the application namespace
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ kubeconfig_path }}"
+          - apply
+          - -f
+          - "-"
+        stdin: "{{ namespace_manifest | to_nice_yaml }}"
+      vars:
+        namespace_manifest:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ kubernetes_namespace }}"
+      register: namespace_apply
+      changed_when: >-
+        ' created' in namespace_apply.stdout or
+        ' configured' in namespace_apply.stdout
+
+    - name: Apply application secrets
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ kubeconfig_path }}"
+          - apply
+          - -f
+          - "-"
+        stdin: "{{ application_secret_manifest | to_nice_yaml }}"
+      vars:
+        application_secret_manifest:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: emoselfie-secrets
+            namespace: "{{ kubernetes_namespace }}"
+          type: Opaque
+          stringData:
+            POSTGRES_USER: "{{ postgres_user }}"
+            POSTGRES_PASSWORD: "{{ vault_postgres_password }}"
+            POSTGRES_DB: "{{ postgres_database }}"
+            DATABASE_URL: "postgresql+asyncpg://{{ postgres_user }}:{{ vault_postgres_password }}@postgres:5432/{{ postgres_database }}"
+            COOKIE_SECRET: "{{ vault_cookie_secret }}"
+            CAPTURE_TOKEN_SECRET: "{{ vault_capture_token_secret }}"
+            MEDIA_TOKEN_SECRET: "{{ vault_media_token_secret }}"
+      register: application_secret_apply
+      changed_when: >-
+        ' created' in application_secret_apply.stdout or
+        ' configured' in application_secret_apply.stdout
+      no_log: true
+
+    - name: Get a fresh ECR password
+      ansible.builtin.command:
+        argv:
+          - aws
+          - ecr
+          - get-login-password
+          - --region
+          - "{{ aws_region }}"
+      register: ecr_password
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Record the ECR login result without its password
+      ansible.builtin.set_fact:
+        ecr_login_succeeded: "{{ ecr_password.rc == 0 }}"
+        ecr_login_error: "{{ ecr_password.stderr | default('') | trim }}"
+      no_log: true
+
+    - name: Validate ECR login permission
+      ansible.builtin.assert:
+        that: ecr_login_succeeded
+        fail_msg: >-
+          ECR 로그인 토큰을 받지 못했습니다: {{ ecr_login_error }}
+          terraform IAM 사용자에 ecr:GetAuthorizationToken과 이미지 pull 권한을
+          추가한 뒤 다시 실행하십시오.
+
+    - name: Render a fresh ECR image pull secret
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ kubeconfig_path }}"
+          - --namespace
+          - "{{ kubernetes_namespace }}"
+          - create
+          - secret
+          - docker-registry
+          - ecr-registry
+          - "--docker-server={{ ecr_registry }}"
+          - --docker-username=AWS
+          - "--docker-password={{ ecr_password.stdout | trim }}"
+          - --dry-run=client
+          - -o
+          - yaml
+      register: ecr_secret_manifest
+      changed_when: false
+      no_log: true
+
+    - name: Apply the ECR image pull secret
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ kubeconfig_path }}"
+          - apply
+          - -f
+          - "-"
+        stdin: "{{ ecr_secret_manifest.stdout }}"
+      register: ecr_secret_apply
+      changed_when: >-
+        ' created' in ecr_secret_apply.stdout or
+        ' configured' in ecr_secret_apply.stdout
+      no_log: true
+
+    - name: Wait for the namespace default service account
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ kubeconfig_path }}"
+          - --namespace
+          - "{{ kubernetes_namespace }}"
+          - get
+          - serviceaccount
+          - default
+      register: default_service_account
+      retries: 30
+      delay: 2
+      until: default_service_account.rc == 0
+      changed_when: false
+
+    - name: Attach the ECR secret to the default service account
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ kubeconfig_path }}"
+          - --namespace
+          - "{{ kubernetes_namespace }}"
+          - patch
+          - serviceaccount
+          - default
+          - --type=merge
+          - -p
+          - '{"imagePullSecrets":[{"name":"ecr-registry"}]}'
+      register: service_account_patch
+      changed_when: "'patched' in service_account_patch.stdout"
+
+    - name: Render the runtime image overlay
+      ansible.builtin.template:
+        src: ../templates/runtime-kustomization.yaml.j2
+        dest: "{{ generated_dir }}/kustomization.yaml"
+        mode: "0600"
+
+    - name: Validate the rendered Kubernetes manifests
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ kubeconfig_path }}"
+          - kustomize
+          - "{{ generated_dir }}"
+      register: rendered_manifests
+      changed_when: false
+
+    - name: Remove the immutable migration job from the previous deployment
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ kubeconfig_path }}"
+          - --namespace
+          - "{{ kubernetes_namespace }}"
+          - delete
+          - job
+          - migrate
+          - --ignore-not-found
+      register: migration_delete
+      changed_when: "'deleted' in migration_delete.stdout"
+
+    - name: Apply the production application manifests
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ kubeconfig_path }}"
+          - apply
+          - -k
+          - "{{ generated_dir }}"
+      register: application_apply
+      changed_when: >-
+        ' created' in application_apply.stdout or
+        ' configured' in application_apply.stdout
+
+    - name: Wait for the database migration
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ kubeconfig_path }}"
+          - --namespace
+          - "{{ kubernetes_namespace }}"
+          - wait
+          - --for=condition=complete
+          - job/migrate
+          - --timeout=10m
+      changed_when: false
+
+    - name: Wait for the backend rollout
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ kubeconfig_path }}"
+          - --namespace
+          - "{{ kubernetes_namespace }}"
+          - rollout
+          - status
+          - deployment/backend
+          - --timeout=10m
+      changed_when: false
+
+    - name: Wait for the web rollout
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ kubeconfig_path }}"
+          - --namespace
+          - "{{ kubernetes_namespace }}"
+          - rollout
+          - status
+          - deployment/web
+          - --timeout=5m
+      changed_when: false
+
+    - name: Show the deployed workload status
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ kubeconfig_path }}"
+          - --namespace
+          - "{{ kubernetes_namespace }}"
+          - get
+          - pods,pvc,ingress
+          - -o
+          - wide
+      register: workload_status
+      changed_when: false
+
+    - name: Print the deployed workload status
+      ansible.builtin.debug:
+        var: workload_status.stdout_lines

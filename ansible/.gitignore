@@ -1,0 +1,4 @@
+.generated/
+group_vars/all/vault.yml
+*.retry
+

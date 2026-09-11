@@ -1,0 +1,7 @@
+# 이 파일을 복사해 평문으로 커밋하지 않는다.
+# README의 `ansible-vault create` 명령으로 group_vars/all/vault.yml을 만든다.
+vault_postgres_password: "32자 이상의 임의 문자열"
+vault_cookie_secret: "서로 다른 32자 이상의 임의 문자열"
+vault_capture_token_secret: "서로 다른 32자 이상의 임의 문자열"
+vault_media_token_secret: "서로 다른 32자 이상의 임의 문자열"
+
