@@ -56,6 +56,28 @@ vault_capture_token_secret: "..."
 vault_media_token_secret: "..."
 ```
 
+세 k3s 노드에 팀원별 SSH 계정을 만들려면 같은 Vault 파일에 계정명과 공개키를
+추가한다. 개인키는 넣지 않는다.
+
+```yaml
+vault_ssh_users:
+  - username: "gildong"
+    public_key: "ssh-ed25519 AAAA... gildong@laptop"
+```
+
+기존 Vault를 수정할 때는 다음 명령을 사용한다.
+
+```bash
+ansible-vault edit group_vars/all/vault.yml
+```
+
+계정과 공개키를 세 노드에 적용한다. Terraform의 `node_public_ips` 출력으로 대상
+인스턴스를 자동 구성하며, 생성된 팀원 계정에는 sudo 권한을 부여하지 않는다.
+
+```bash
+ansible-playbook playbooks/users.yml --ask-vault-pass
+```
+
 Vault 파일은 `.gitignore`에 포함되어 있다. 암호화 파일을 팀에서 공유하려면 ignore
 정책을 바꾸기 전에 저장소의 비밀 관리 방식을 먼저 정한다.
 

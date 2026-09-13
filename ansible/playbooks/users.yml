@@ -1,0 +1,107 @@
+---
+- name: Build an inventory from Terraform outputs
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    repo_root: "{{ playbook_dir }}/../.."
+    terraform_dir: "{{ repo_root }}/terraform"
+    ssh_private_key_file: "{{ repo_root }}/../project1_key.pem"
+
+  tasks:
+    - name: Check the administrator SSH private key
+      ansible.builtin.stat:
+        path: "{{ ssh_private_key_file }}"
+      register: administrator_ssh_key
+
+    - name: Validate the administrator SSH private key
+      ansible.builtin.assert:
+        that:
+          - administrator_ssh_key.stat.exists
+          - administrator_ssh_key.stat.isreg
+        fail_msg: >-
+          Terraform 인스턴스에 접속할 project1_key.pem을 찾을 수 없습니다:
+          {{ ssh_private_key_file }}
+
+    - name: Read all node public IPs from Terraform
+      ansible.builtin.command:
+        argv:
+          - terraform
+          - "-chdir={{ terraform_dir }}"
+          - output
+          - -json
+          - node_public_ips
+      register: terraform_node_ips
+      changed_when: false
+      check_mode: false
+
+    - name: Add the Terraform nodes to the in-memory inventory
+      ansible.builtin.add_host:
+        name: "{{ item.key }}"
+        groups: k3s_nodes
+        ansible_host: "{{ item.value }}"
+        ansible_user: ubuntu
+        ansible_ssh_private_key_file: "{{ ssh_private_key_file }}"
+        ansible_python_interpreter: /usr/bin/python3
+      loop: "{{ (terraform_node_ips.stdout | from_json) | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+- name: Manage team SSH accounts on every k3s node
+  hosts: k3s_nodes
+  gather_facts: false
+  become: true
+
+  vars_files:
+    - "{{ playbook_dir }}/../group_vars/all/vault.yml"
+
+  pre_tasks:
+    - name: Wait until each node accepts SSH connections
+      ansible.builtin.wait_for_connection:
+        timeout: 60
+
+    - name: Validate the team SSH user list
+      ansible.builtin.assert:
+        that:
+          - vault_ssh_users is defined
+          - vault_ssh_users is sequence
+          - vault_ssh_users is not string
+          - vault_ssh_users | length > 0
+        fail_msg: >-
+          Vault에 하나 이상의 username과 public_key를 가진 vault_ssh_users 목록이
+          필요합니다.
+
+    - name: Validate each team account and public key
+      ansible.builtin.assert:
+        that:
+          - item.username is defined
+          - item.username is match('^[a-z_][a-z0-9_-]*$')
+          - item.public_key is defined
+          - item.public_key is match('^(ssh-ed25519|ssh-rsa|ecdsa-sha2-)')
+        fail_msg: "팀원 계정명 또는 SSH 공개키 형식이 올바르지 않습니다."
+      loop: "{{ vault_ssh_users }}"
+      no_log: true
+
+  tasks:
+    - name: Create a Linux account for each team member
+      ansible.builtin.user:
+        name: "{{ item.username }}"
+        shell: /bin/bash
+        create_home: true
+        password_lock: true
+        state: present
+      loop: "{{ vault_ssh_users }}"
+      loop_control:
+        label: "{{ item.username }}"
+
+    - name: Install each team member's SSH public key
+      ansible.posix.authorized_key:
+        user: "{{ item.username }}"
+        key: "{{ item.public_key }}"
+        state: present
+        exclusive: true
+        manage_dir: true
+      loop: "{{ vault_ssh_users }}"
+      loop_control:
+        label: "{{ item.username }}"
+      no_log: true
