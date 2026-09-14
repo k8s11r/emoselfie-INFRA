@@ -1,4 +1,9 @@
 ---
+# Traefik의 forwarded-header 설정은 앱 배포와 독립이지만 같은 클러스터를
+# 전제로 한다. 단독 실행도 되도록 별도 playbook으로 두고 여기서 먼저 가져온다
+# (이슈 #11).
+- ansible.builtin.import_playbook: traefik.yml
+
 - name: Deploy Emoselfie to the Terraform-managed k3s cluster
   hosts: localhost
   gather_facts: false
