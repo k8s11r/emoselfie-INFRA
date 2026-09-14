@@ -70,17 +70,9 @@ spec:
       containers:
         - name: backend
           image: emoselfie-backend
-          # 앞단에서 TLS를 종료하는 모든 구성에 필요하다(ALB, Cloudflare Tunnel,
-          # cert-manager를 붙인 Traefik 등). 이 앱은 카메라 접근 때문에 secure
-          # context가 필수라 운영에서는 어느 쪽이든 https다.
-          #
-          # 기본 CMD는 --proxy-headers가 없어 uvicorn이 X-Forwarded-Proto와 무관하게
-          # scope["scheme"]을 항상 http로 둔다. 그러면 middleware.py의 same-origin
-          # 검사가 parsed.scheme == scope["scheme"] 에서 어긋나, https로 들어온
-          # /api/ POST가 전부 FORBIDDEN_ORIGIN으로 막힌다.
-          #
-          # backend는 포트를 노출하지 않아 nginx를 통해서만 닿으므로 신뢰 범위를
-          # 넓혀도 된다. compose도 같은 이유로 같은 인자를 준다.
+          # Traefik이 전달한 외부 scheme으로 Origin과 쿠키 정책을 판단한다.
+          # 기존 신뢰 설정을 유지한다. ClusterIP는 접근 제어가 아니므로
+          # 운영에서는 신뢰한 프록시만 Pod에 접근할 수 있도록 제한해야 한다.
           command: ["uvicorn", "app.main:create_app", "--factory",
                     "--host", "0.0.0.0", "--port", "8000",
                     "--timeout-graceful-shutdown", "10",
@@ -132,7 +124,17 @@ apiVersion: v1
 kind: Service
 metadata:
   name: backend
+  annotations:
+    traefik.ingress.kubernetes.io/service.nativelb: "false"
+    traefik.ingress.kubernetes.io/service.passhostheader: "true"
+    traefik.ingress.kubernetes.io/service.sticky.cookie: "true"
+    traefik.ingress.kubernetes.io/service.sticky.cookie.name: es_route
+    traefik.ingress.kubernetes.io/service.sticky.cookie.httponly: "true"
+    traefik.ingress.kubernetes.io/service.sticky.cookie.samesite: lax
+    traefik.ingress.kubernetes.io/service.sticky.cookie.secure: "false"
 spec:
+  # Traefik이 Pod로 직접 분산하므로 ClientIP 대신 위 라우팅 쿠키를 사용한다.
+  sessionAffinity: None
   selector:
     app: backend
   ports:

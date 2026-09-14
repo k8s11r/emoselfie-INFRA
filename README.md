@@ -2,6 +2,9 @@
 
 로컬에서 전체 스택을 한 번에 띄우는 구성이다.
 
+이 문서의 nginx 프록시 구성은 **Docker Compose용**이다. K8s에서는 Traefik이
+backend와 정적 web으로 직접 분기한다. [K8s 요청 경로와 전환 순서](k8s/README.md)를 참고한다.
+
 ```bash
 docker compose up --build
 ```
@@ -88,7 +91,9 @@ docker compose exec postgres psql -U emoselfie -d emoselfie
 docker compose exec redis redis-cli
 ```
 
-**Safari 대응으로 nginx가 쿠키의 `Secure`를 떼낸다.** 백엔드는 항상 `secure=True`로 발급하는데(`app/api/middleware.py:62`) Safari는 http 오리진에 Secure 쿠키를 저장하지 않는다. localhost도 예외가 아니다. TLS를 붙이면 `nginx/default.conf`의 `proxy_cookie_flags` 세 줄을 지운다.
+**Compose는 기존 HTTP 쿠키 보정을 유지한다.** `compose/web/default.conf`는 HTTP에만
+`Secure`를 제거하고 HTTPS에서는 유지한다. K8s는 nginx 쿠키 재작성 대신 BE의
+개발 전용 `ALLOW_INSECURE_COOKIE` 정책을 사용한다. 두 nginx 설정은 공유하지 않는다.
 
 ## 자주 쓰는 명령
 

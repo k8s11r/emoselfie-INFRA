@@ -13,8 +13,7 @@ resources:
   - ingress.yaml
 
 configMapGenerator:
-  # compose의 web 서비스가 마운트하던 것과 같은 파일이다. 단일 출처를 유지하려고
-  # compose.yaml도 이 경로를 본다.
+  # K8s 정적 서버 전용. Compose 프록시는 compose/web/default.conf를 사용한다.
   - name: nginx-conf
     files:
       - default.conf=web/default.conf
