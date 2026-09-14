@@ -135,20 +135,7 @@ resource "aws_vpc_security_group_ingress_rule" "http" {
   from_port                    = 80
   to_port                      = 80
   ip_protocol                  = "tcp"
-  description                  = "HTTP from the Network Load Balancer"
-
-  lifecycle {
-    create_before_destroy = true
-  }
-}
-
-resource "aws_vpc_security_group_ingress_rule" "https" {
-  security_group_id            = aws_security_group.k3s.id
-  referenced_security_group_id = aws_security_group.load_balancer.id
-  from_port                    = 443
-  to_port                      = 443
-  ip_protocol                  = "tcp"
-  description                  = "HTTPS from the Network Load Balancer"
+  description                  = "HTTP from the Application Load Balancer"
 
   lifecycle {
     create_before_destroy = true

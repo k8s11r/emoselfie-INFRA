@@ -42,6 +42,17 @@ variable "key_name" {
   default     = "project1_key"
 }
 
+variable "domain_name" {
+  description = "Domain served by the load balancer. An ISSUED ACM certificate for this name must already exist in aws_region."
+  type        = string
+  default     = "emoselfie.click"
+
+  validation {
+    condition     = can(regex("^[a-z0-9-]+(\\.[a-z0-9-]+)+$", var.domain_name))
+    error_message = "domain_name must be a bare domain such as emoselfie.click, without a scheme or trailing dot."
+  }
+}
+
 variable "instance_type" {
   description = "EC2 type used by all k3s nodes. The application needs at least 2 vCPU and 4 GiB RAM."
   type        = string
