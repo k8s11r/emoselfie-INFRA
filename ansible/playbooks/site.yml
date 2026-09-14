@@ -197,6 +197,24 @@
         ' created' in longhorn_apply.stdout or
         ' configured' in longhorn_apply.stdout
 
+    - name: Wait until Longhorn creates pods
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ kubeconfig_path }}"
+          - get
+          - pods
+          - --namespace
+          - longhorn-system
+          - -o
+          - name
+      register: longhorn_pods
+      retries: 60
+      delay: 5
+      until: longhorn_pods.stdout_lines | length > 0
+      changed_when: false
+
     - name: Wait for Longhorn pods
       ansible.builtin.command:
         argv:
