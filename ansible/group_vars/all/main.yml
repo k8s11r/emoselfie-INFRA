@@ -11,3 +11,6 @@ longhorn_version: v1.12.1
 expected_node_count: 3
 kubernetes_namespace: emoselfie
 
+# k3s ServiceLB(svclb) pod가 트래픽을 중계하므로 Traefik이 보는 출발지는 VPC가
+# 아니라 이 대역이다. k3s 기본값이며 --cluster-cidr로 바꿨다면 여기도 맞춰야 한다.
+k3s_cluster_cidr: 10.42.0.0/16

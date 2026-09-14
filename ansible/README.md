@@ -159,8 +159,15 @@ k3s의 deploy 컨트롤러가 이 디렉터리를 감시하다가 `HelmChartConf
 
 ### 신뢰 범위
 
-기본값은 Terraform의 `vpc_cidr` output이다. 로드밸런서가 VPC 안에서 요청을
-보낸다는 전제이며, 실행 시 덮어쓸 수 있다.
+기본값은 두 개다. Terraform의 `vpc_cidr` output과 `k3s_cluster_cidr`
+(`group_vars/all/main.yml`, k3s 기본값 `10.42.0.0/16`)이다.
+
+**두 대역이 모두 필요하다.** ALB는 VPC 안에서 요청을 보내지만, k3s ServiceLB의
+svclb pod가 중계하면서 출발지를 자기 pod IP로 바꾼다. 그래서 Traefik이 실제로 보는
+주소는 pod 대역이다. VPC 대역만 신뢰하면 Traefik이 ALB의 헤더를 버리고 `http`로
+덮어써서 `/api/` POST가 전부 `FORBIDDEN_ORIGIN`이 된다. 실제로 그렇게 겪었다.
+
+실행 시 덮어쓸 수 있다.
 
 ```bash
 ansible-playbook playbooks/traefik.yml -e '{"traefik_trusted_ips":["10.0.0.0/16"]}'
@@ -169,12 +176,9 @@ ansible-playbook playbooks/traefik.yml -e '{"traefik_trusted_ips":["10.0.0.0/16"
 `insecure: true`는 쓰지 않는다. "누가 보내든 `X-Forwarded-*`를 믿는다"는 뜻이라
 노드에 직접 닿을 경로가 하나라도 있으면 헤더를 위조할 수 있다.
 
-> **현재 구성에서의 한계** — `terraform/load-balancer.tf`가 만드는 것은 ALB가
-> 아니라 TCP 리스너를 쓰는 **NLB(L4)**다. L4는 `X-Forwarded-*`를 붙이지 않고,
-> instance 대상 NLB는 클라이언트 IP를 보존하므로 Traefik이 보는 출발지는 VPC가
-> 아니라 브라우저의 공인 IP다. 즉 지금은 이 설정이 **동작하지 않는 것이 아니라
-> 쓰일 일이 없다**(무해하게 통과된다). 앞단을 ALB로 바꾸거나 Cloudflare Tunnel을
-> 붙이는 순간 필요해지고, 그때 `vpc_cidr` 기본값이 맞는 값이 된다.
+> 앞단을 바꾸면 이 값을 다시 맞춰야 한다. Cloudflare Tunnel처럼 `cloudflared`가
+> 클러스터 안에서 도는 구성이라면 pod 대역만으로 충분하고, 노드에서 직접 도는
+> 구성이라면 VPC 대역이 쓰인다.
 
 ### 확인
 

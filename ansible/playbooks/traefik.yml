@@ -84,11 +84,19 @@
   gather_facts: false
   become: true
 
+  # inventory가 ansible/inventory/ 아래에 있어 상위 group_vars를 자동으로 찾지
+  # 못하므로 명시적으로 불러온다.
+  vars_files:
+    - "{{ playbook_dir }}/../group_vars/all/main.yml"
+
   vars:
-    # 앞단(ALB, 터널)이 VPC 안에서 요청을 보낸다는 전제다. 앞단을 바꾸면 이
-    # 값을 실제 출발지 범위로 다시 맞춰야 한다. ansible/README.md 참고.
+    # 두 대역이 모두 필요하다. ALB는 VPC 안에서 요청을 보내지만, k3s ServiceLB의
+    # svclb pod가 중계하면서 출발지를 자기 pod IP로 바꾼다. 그래서 Traefik이 실제로
+    # 보는 주소는 pod 대역이다. VPC 대역은 svclb를 거치지 않는 경로(hostNetwork 등)
+    # 를 위해 남겨 둔다.
     traefik_trusted_ips:
       - "{{ vpc_cidr }}"
+      - "{{ k3s_cluster_cidr }}"
 
   pre_tasks:
     - name: Wait until the server node accepts SSH connections
@@ -120,7 +128,10 @@
     # 적용은 비동기다. Helm 컨트롤러가 upgrade Job을 돌린 뒤에야 Deployment가
     # 갱신되므로, 곧바로 rollout status를 부르면 옛 Deployment가 이미 안정
     # 상태라 성공을 반환한다. 스펙에 플래그가 나타날 때까지 기다린다.
-    - name: Wait until the Traefik deployment carries the forwarded-header flag
+    #
+    # 플래그 이름만 보면 안 된다. 이전 배포의 값이 이미 들어 있으면 값이 바뀌기
+    # 전에 통과해 버린다. 기대하는 목록까지 그대로 일치하는지 확인한다.
+    - name: Wait until the Traefik deployment carries the expected trusted proxy list
       ansible.builtin.command:
         argv:
           - k3s
@@ -135,7 +146,9 @@
       register: traefik_arguments
       retries: 60
       delay: 5
-      until: "'forwardedHeaders' in traefik_arguments.stdout"
+      until: >-
+        ('entryPoints.web.forwardedHeaders.trustedIPs='
+         ~ (traefik_trusted_ips | join(','))) in traefik_arguments.stdout
       changed_when: false
 
     - name: Wait for the Traefik rollout to finish
