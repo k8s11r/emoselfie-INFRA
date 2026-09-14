@@ -6,15 +6,16 @@ Ansible playbook은 **로컬 Mac에서** Terraform이 만든 클러스터로 애
 
 한 번 실행하면 다음 순서로 동작한다.
 
-1. Terraform output에서 k3s server 공인 IP 확인
-2. server의 kubeconfig를 로컬 `.generated/`로 복사
-3. 세 노드가 모두 `Ready`인지 확인
-4. Longhorn 설치 또는 갱신
-5. namespace와 애플리케이션 Secret 생성 또는 갱신
-6. 새 ECR 로그인 토큰으로 image pull Secret 갱신
-7. BE/FE SHA 태그를 임시 Kustomize 오버레이에 주입
-8. 이전 migrate Job 삭제 후 매니페스트 적용
-9. migration, backend, web 준비 완료까지 대기
+1. server 노드에 Traefik forwarded-header 설정을 놓고 반영을 기다림
+2. Terraform output에서 k3s server 공인 IP 확인
+3. server의 kubeconfig를 로컬 `.generated/`로 복사
+4. 세 노드가 모두 `Ready`인지 확인
+5. Longhorn 설치 또는 갱신
+6. namespace와 애플리케이션 Secret 생성 또는 갱신
+7. 새 ECR 로그인 토큰으로 image pull Secret 갱신
+8. BE/FE SHA 태그를 임시 Kustomize 오버레이에 주입
+9. 이전 migrate Job 삭제 후 매니페스트 적용
+10. migration, backend, web 준비 완료까지 대기
 
 ## 1. Ansible 설치
 
@@ -121,6 +122,74 @@ ansible-playbook playbooks/site.yml \
   -e backend_tag=sha-aaaaaaaaaaaa \
   -e frontend_tag=sha-bbbbbbbbbbbb
 ```
+
+## Traefik forwarded-header 설정
+
+`playbooks/traefik.yml`이 담당한다. `site.yml`이 맨 앞에서 가져오므로 배포할 때
+따로 실행할 필요는 없다. 클러스터를 새로 만든 뒤 설정만 넣고 싶으면 단독으로
+실행한다. Vault를 읽지 않아 `--ask-vault-pass`가 필요 없다.
+
+```bash
+cd ansible
+ansible-playbook playbooks/traefik.yml
+```
+
+### 무엇을 하는가
+
+앞단이 보낸 `X-Forwarded-Proto: https`를 Traefik이 실제 연결 스킴인 `http`로
+덮어쓰면, backend의 same-origin 검사가 어긋나 `/api/` POST가 전부
+`FORBIDDEN_ORIGIN`이 되고 websocket 업그레이드가 403이 된다(이슈 #11).
+
+playbook은 server 노드에 파일 하나를 놓는다.
+
+```
+/var/lib/rancher/k3s/server/manifests/traefik-config.yaml
+```
+
+k3s의 deploy 컨트롤러가 이 디렉터리를 감시하다가 `HelmChartConfig`를 만들고,
+내장 Helm 컨트롤러가 Traefik 차트의 values에 병합해 Deployment를 갱신한다.
+**k3s를 재시작하지 않는다.** Traefik을 `kubectl edit`으로 직접 고치면 Helm
+컨트롤러가 되돌리고, k3s가 설치한 `traefik.yaml`을 고치면 k3s 업그레이드 때
+사라진다. 이 방식은 둘 다 피하면서 노드를 다시 만들어도 Ansible이 복원한다.
+
+`HelmChartConfig`는 이름과 네임스페이스가 대상 `HelmChart`(`kube-system/traefik`)와
+모두 같아야 매칭된다. 어긋나면 **에러 없이 조용히 무시되므로** 템플릿의
+`metadata`는 바꾸지 않는다. Kustomize 오버레이에 넣지 못하는 이유도 같다.
+오버레이의 `namespace:` 설정이 네임스페이스를 덮어써 매칭이 깨진다.
+
+### 신뢰 범위
+
+기본값은 두 개다. Terraform의 `vpc_cidr` output과 `k3s_cluster_cidr`
+(`group_vars/all/main.yml`, k3s 기본값 `10.42.0.0/16`)이다.
+
+**두 대역이 모두 필요하다.** ALB는 VPC 안에서 요청을 보내지만, k3s ServiceLB의
+svclb pod가 중계하면서 출발지를 자기 pod IP로 바꾼다. 그래서 Traefik이 실제로 보는
+주소는 pod 대역이다. VPC 대역만 신뢰하면 Traefik이 ALB의 헤더를 버리고 `http`로
+덮어써서 `/api/` POST가 전부 `FORBIDDEN_ORIGIN`이 된다. 실제로 그렇게 겪었다.
+
+실행 시 덮어쓸 수 있다.
+
+```bash
+ansible-playbook playbooks/traefik.yml -e '{"traefik_trusted_ips":["10.0.0.0/16"]}'
+```
+
+`insecure: true`는 쓰지 않는다. "누가 보내든 `X-Forwarded-*`를 믿는다"는 뜻이라
+노드에 직접 닿을 경로가 하나라도 있으면 헤더를 위조할 수 있다.
+
+> 앞단을 바꾸면 이 값을 다시 맞춰야 한다. Cloudflare Tunnel처럼 `cloudflared`가
+> 클러스터 안에서 도는 구성이라면 pod 대역만으로 충분하고, 노드에서 직접 도는
+> 구성이라면 VPC 대역이 쓰인다.
+
+### 확인
+
+```bash
+KUBECONFIG=ansible/.generated/k3s-prod.yaml \
+  kubectl -n kube-system get deploy traefik \
+  -o jsonpath='{.spec.template.spec.containers[0].args}' | tr ' ' '\n' | grep forwardedHeaders
+```
+
+브라우저에서 방 만들기(`POST /api/rooms`)와 websocket 연결까지 확인한다. `curl`은
+`Origin` 헤더를 보내지 않아 검사가 건너뛰어지므로 재현되지 않는다.
 
 ## 재배포
 
