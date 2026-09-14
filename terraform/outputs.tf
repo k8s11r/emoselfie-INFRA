@@ -1,6 +1,6 @@
 output "server_public_ip" {
-  description = "Public IPv4 address of the k3s server."
-  value       = aws_instance.server.public_ip
+  description = "Elastic IP of the k3s server. Stays the same across stop and start."
+  value       = aws_eip.server.public_ip
 }
 
 output "server_private_ip" {
@@ -16,7 +16,7 @@ output "agent_public_ips" {
 output "node_public_ips" {
   description = "Public IPv4 addresses keyed by node name."
   value = merge(
-    { server = aws_instance.server.public_ip },
+    { server = aws_eip.server.public_ip },
     { for index, instance in aws_instance.agent : "agent-${index + 1}" => instance.public_ip },
   )
 }
@@ -24,14 +24,14 @@ output "node_public_ips" {
 output "ssh_commands" {
   description = "Example SSH commands. Set the private key path to the local project1_key.pem location."
   value = merge(
-    { server = "ssh -i /path/to/project1_key.pem ubuntu@${aws_instance.server.public_ip}" },
+    { server = "ssh -i /path/to/project1_key.pem ubuntu@${aws_eip.server.public_ip}" },
     { for index, instance in aws_instance.agent : "agent-${index + 1}" => "ssh -i /path/to/project1_key.pem ubuntu@${instance.public_ip}" },
   )
 }
 
 output "kubeconfig_command" {
   description = "Copies the kubeconfig from the server and rewrites its endpoint for local use."
-  value       = "scp -i /path/to/project1_key.pem ubuntu@${aws_instance.server.public_ip}:/etc/rancher/k3s/k3s.yaml ./k3s.yaml && sed -i.bak 's/127.0.0.1/${aws_instance.server.public_ip}/' ./k3s.yaml"
+  value       = "scp -i /path/to/project1_key.pem ubuntu@${aws_eip.server.public_ip}:/etc/rancher/k3s/k3s.yaml ./k3s.yaml && sed -i.bak 's/127.0.0.1/${aws_eip.server.public_ip}/' ./k3s.yaml"
 }
 
 output "cluster_check_command" {
