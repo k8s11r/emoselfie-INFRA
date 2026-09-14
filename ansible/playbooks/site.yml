@@ -448,7 +448,7 @@
           - "{{ kubernetes_namespace }}"
           - rollout
           - status
-          - deployment/web
+          - daemonset/web
           - --timeout=5m
       changed_when: false
 
