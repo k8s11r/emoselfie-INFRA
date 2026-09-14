@@ -31,6 +31,25 @@ spec:
       # 공유 볼륨(models PVC)이라 최초 1회만 받고 이후 pod는 재사용한다.
       # 스크립트가 sha256으로 확인하고 건너뛴다.
       initContainers:
+        # dependency_checks()가 postgres/redis 연결에 실패하면 RuntimeError를
+        # 던져 uvicorn 프로세스 자체가 죽는다(app/core/resources.py:81) — 콜드
+        # 부트 시 CrashLoopBackOff에 의존하게 되는데, 백오프가 지수적으로
+        # 늘어나 dependency가 실제로 뜬 뒤에도 재시작까지 불필요하게 오래
+        # 걸린다. migrate Job의 wait-postgres와 같은 방식(고정 간격 폴링)으로
+        # 네트워크 레벨 대기를 넣어 이 문제를 없앤다. postgres/redis-sentinel은
+        # headless(clusterIP: None), redis-media는 일반 ClusterIP지만 둘 다
+        # Ready pod만 Endpoints에 올라가므로 nc로 충분히 게이팅된다. k3d 3노드
+        # 콜드부트 실측: 대기 없이는 backend가 Init:Error로 재시작을 반복했으나,
+        # 이 initContainer를 넣은 뒤로는 재시작 0회로 정상 기동됨.
+        - name: wait-dependencies
+          image: busybox:1.37
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z postgres 5432; do echo "postgres 대기 중"; sleep 2; done
+              until nc -z redis-sentinel 26379; do echo "redis-sentinel 대기 중"; sleep 2; done
+              until nc -z redis-media 6379; do echo "redis-media 대기 중"; sleep 2; done
         - name: prepare-models
           image: emoselfie-models
           # NamedTemporaryFile의 기본 권한은 0600이다. initContainer(root)가
