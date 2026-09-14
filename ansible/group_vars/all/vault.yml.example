@@ -5,3 +5,8 @@ vault_cookie_secret: "서로 다른 32자 이상의 임의 문자열"
 vault_capture_token_secret: "서로 다른 32자 이상의 임의 문자열"
 vault_media_token_secret: "서로 다른 32자 이상의 임의 문자열"
 
+# 팀원마다 고유한 Linux 계정과 SSH 공개키를 사용한다.
+# 개인키는 절대로 이 파일에 넣지 않는다.
+vault_ssh_users:
+  - username: "team_member"
+    public_key: "ssh-ed25519 AAAA... team_member@laptop"

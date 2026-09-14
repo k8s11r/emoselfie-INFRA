@@ -12,6 +12,9 @@ metadata:
   name: migrate
 spec:
   backoffLimit: 3
+  # 완료(성공/실패 무관) 후 10분 뒤 k8s가 이 Job을 자동으로 지운다. 재배포 전
+  # 수동 `kubectl delete job migrate` 없이도 다음 apply가 그냥 통과한다.
+  ttlSecondsAfterFinished: 600
   template:
     spec:
       restartPolicy: Never

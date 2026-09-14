@@ -8,6 +8,7 @@
 - 기본 `t3.medium`, 노드별 암호화된 gp3 30 GiB
 - 기존 EC2 키페어 `project1_key` 사용
 - 서로 다른 가용 영역의 기본 퍼블릭 서브넷 3개 사용
+- 세 노드를 대상으로 하는 인터넷-facing AWS Network Load Balancer 사용
 - 노드 IAM 역할에 `AmazonEC2ContainerRegistryReadOnly` 연결
 - Longhorn의 호스트 선행 패키지(`open-iscsi`, `nfs-common`) 설치
 
@@ -39,6 +40,22 @@ terraform plan -out=tfplan
 terraform apply tfplan
 ```
 
+NLB의 HTTP/HTTPS 리스너는 세 EC2 노드의 80/443 포트로 TCP 트래픽을 전달한다.
+노드 보안 그룹은 이 포트들을 NLB 보안 그룹에서만 허용하므로 노드 공인 IP로
+애플리케이션에 직접 접근할 수 없다. SSH(22)와 Kubernetes API(6443)는 기존처럼
+`admin_cidr`에서만 접근할 수 있다.
+
+애플리케이션 접속 주소는 다음 출력으로 확인한다.
+
+```bash
+terraform output -raw application_http_url
+```
+
+NLB의 HTTP Target Group은 Traefik Ingress를 통과하는 `/health/live` 요청으로 각
+노드의 상태를 확인한다. HTTPS 리스너는 TLS를 종료하지 않고 443 트래픽을 Traefik에
+그대로 전달한다. 신뢰할 수 있는 HTTPS를 제공하려면 이후 도메인과 Traefik TLS
+인증서 설정이 추가로 필요하다.
+
 `apply`가 끝났다고 k3s 부팅까지 끝난 것은 아니다. 일반적으로 몇 분이 더 필요하다.
 진행 상태는 server에서 확인한다.
 
@@ -65,8 +82,8 @@ terraform output -raw kubeconfig_command
 - `user_data`가 바뀌면 해당 EC2가 교체된다. 먼저 `terraform plan`의 교체 표시를
   확인한다.
 - 인스턴스에는 고정 Elastic IP를 붙이지 않았다. 인스턴스를 중지 후 시작하면
-  공인 IP가 바뀔 수 있다. 도메인과 운영 진입점은 이후 NLB 또는 Elastic IP 설계와
-  함께 확정한다.
+  공인 IP가 바뀔 수 있지만 애플리케이션의 NLB DNS 이름은 유지된다. SSH와
+  Kubernetes API 접속 시에는 변경된 노드 공인 IP를 Terraform 출력에서 확인한다.
 - EC2 인스턴스 프로파일은 ECR API 권한만 제공한다. kubelet이 만료되는 ECR
   인증을 자동 갱신하도록 하는 credential provider 구성은 애플리케이션 배포
   단계에서 별도로 추가하고 검증한다.
