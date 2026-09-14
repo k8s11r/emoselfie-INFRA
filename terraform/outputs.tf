@@ -39,3 +39,12 @@ output "cluster_check_command" {
   value       = "KUBECONFIG=./k3s.yaml kubectl get nodes -o wide"
 }
 
+output "load_balancer_dns_name" {
+  description = "DNS name of the internet-facing Network Load Balancer."
+  value       = aws_lb.application.dns_name
+}
+
+output "application_http_url" {
+  description = "HTTP URL for accessing the application through the Network Load Balancer."
+  value       = "http://${aws_lb.application.dns_name}"
+}
