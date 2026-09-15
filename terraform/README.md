@@ -87,9 +87,11 @@ terraform output -raw kubeconfig_command
   저장된다. state를 Git에 커밋하거나 외부에 공유하면 안 된다.
 - `user_data`가 바뀌면 해당 EC2가 교체된다. 먼저 `terraform plan`의 교체 표시를
   확인한다.
-- 인스턴스에는 고정 Elastic IP를 붙이지 않았다. 인스턴스를 중지 후 시작하면
-  공인 IP가 바뀔 수 있지만 접속 도메인은 유지된다. SSH와 Kubernetes API 접속
-  시에는 변경된 노드 공인 IP를 Terraform 출력에서 확인한다.
+- server에는 Elastic IP를 붙여 중지 후 시작해도 주소가 유지된다. k3s가 부팅 때
+  `--tls-san`으로 인증서에 주소를 박기 때문에, 주소가 바뀌면 kubectl이 TLS 검증에서
+  막히고 kubeconfig와 Ansible 인벤토리까지 함께 틀어진다. agent는 공인 IP로
+  통신하지 않으므로 고정하지 않았고, 중지 후 시작하면 주소가 바뀐다. 필요하면
+  Terraform 출력에서 확인한다.
 - ACM 인증서는 Terraform이 만들지 않고 `data`로 찾기만 한다. 도메인 소유 검증이
   필요해 콘솔에서 한 번 발급해 두는 편이 단순하다. **ALB와 같은 리전
   (`ap-northeast-2`)에 있어야 한다.** 다른 리전의 인증서는 찾지 못해 plan에서
@@ -100,6 +102,29 @@ terraform output -raw kubeconfig_command
 - EC2 인스턴스 프로파일은 ECR API 권한만 제공한다. kubelet이 만료되는 ECR
   인증을 자동 갱신하도록 하는 credential provider 구성은 애플리케이션 배포
   단계에서 별도로 추가하고 검증한다.
+
+## 중지와 재시작
+
+비용을 아끼려고 인스턴스를 중지했다 켜는 경우다.
+
+```bash
+# 상태를 실제 값으로 맞춘다. 인프라는 바꾸지 않는다.
+terraform apply -refresh-only
+
+# 애플리케이션 재점검. ECR 토큰이 12시간이라 만료됐을 것이므로 갱신이 필요하다.
+cd ../ansible
+ansible-playbook playbooks/site.yml --ask-vault-pass \
+  -e backend_tag=sha-xxxxxxxxxxxx -e frontend_tag=sha-yyyyyyyyyyyy
+```
+
+- 사설 IP는 유지되므로 agent가 server를 다시 찾아 클러스터는 스스로 복구된다.
+- server 공인 IP도 Elastic IP라 그대로다. 인증서를 다시 만들 필요가 없다.
+- ALB 타깃은 인스턴스 ID 기준이라 헬스체크를 통과하면 자동으로 복구된다.
+- Postgres와 Longhorn 데이터는 EBS에 남는다.
+
+중지해도 ALB(월 약 $16), EBS(3대 30GiB 기준 월 약 $7), Elastic IP 요금은 계속
+나간다. 며칠 이상 쉰다면 `terraform destroy`가 저렴하다. 도메인·인증서·호스팅
+영역은 이 상태에 없으므로 남아 있고, 재구축 후 Ansible로 다시 배포하면 된다.
 
 ## 삭제
 
