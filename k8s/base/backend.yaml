@@ -131,7 +131,8 @@ metadata:
     traefik.ingress.kubernetes.io/service.sticky.cookie.name: es_route
     traefik.ingress.kubernetes.io/service.sticky.cookie.httponly: "true"
     traefik.ingress.kubernetes.io/service.sticky.cookie.samesite: lax
-    traefik.ingress.kubernetes.io/service.sticky.cookie.secure: "false"
+    # 안전한 값을 기본으로 둔다. HTTP 로컬만 overlays/local에서 false로 낮춘다.
+    traefik.ingress.kubernetes.io/service.sticky.cookie.secure: "true"
 spec:
   # Traefik이 Pod로 직접 분산하므로 ClientIP 대신 위 라우팅 쿠키를 사용한다.
   sessionAffinity: None

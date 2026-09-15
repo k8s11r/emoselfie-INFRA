@@ -51,6 +51,12 @@ secretGenerator:
       - MEDIA_TOKEN_SECRET=local-development-media-secret-do-not-use-in-production-0
 
 patches:
+  # 로컬은 HTTP라 라우팅 쿠키의 Secure를 내린다. ALLOW_INSECURE_COOKIE=true와 짝이다.
+  - target: {kind: Service, name: backend}
+    patch: |
+      - op: replace
+        path: /metadata/annotations/traefik.ingress.kubernetes.io~1service.sticky.cookie.secure
+        value: "false"
   # Longhorn은 노드에 open-iscsi가 필요한데 k3d 노드는 최소 이미지라 설치할 수
   # 없다(iscsiadm, mount.nfs 둘 다 없음). 대신 호스트 디렉터리를 세 노드에 모두
   # 물려 같은 ReadWriteMany를 만든다. models-pv.yaml 참고.

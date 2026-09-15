@@ -18,6 +18,7 @@ configMapGenerator:
       - ALLOW_INSECURE_COOKIE=false
 
 patches:
+  # ../local이 낮춘 Secure를 운영과 같게 되돌린다.
   - target: {kind: Service, name: backend}
     patch: |
       - op: replace

@@ -1,0 +1,19 @@
+# 운영 ansible/playbooks/traefik.yml 이 놓는 HelmChartConfig의 k3d 판.
+# 이게 없으면 Traefik이 edge의 X-Forwarded-Proto: https 를 http로 덮어써
+# backend의 same-origin 검사가 403을 낸다.
+#
+# kustomization의 namespace 변환이 kube-system을 덮어쓰면 조용히 무시되므로
+# resources에 넣지 않고 따로 apply 한다 (README 참고).
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    ports:
+      web:
+        forwardedHeaders:
+          trustedIPs:
+            - 10.42.0.0/16    # k3s Pod CIDR (svclb 중계)
+            - 172.16.0.0/12   # k3d docker 네트워크 (edge 컨테이너)

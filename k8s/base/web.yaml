@@ -16,6 +16,11 @@ spec:
           image: emoselfie-web
           ports:
             - containerPort: 80
+          # 정적 파일만 서빙하므로 작게 고정한다. BestEffort로 두면 노드 메모리 압박 시
+          # web이 먼저 축출되어 backend와 분리한 의미가 사라진다.
+          resources:
+            requests: {cpu: 50m, memory: 32Mi}
+            limits:   {cpu: 50m, memory: 32Mi}
           readinessProbe:
             httpGet: {path: /health/live, port: 80}
             initialDelaySeconds: 3

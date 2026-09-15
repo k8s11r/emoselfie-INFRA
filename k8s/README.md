@@ -162,6 +162,46 @@ BE가 Linux에서 torch를 CPU 인덱스로 고정한 뒤(fc7442c) 이미지가 
 끌고 오던 것이 빠졌다. `k3d image import`가 이 크기에서도 반복 개발에 걸리면
 k3d 레지스트리를 붙이는 편이 낫다 (`k3d registry create`).
 
+## 운영 조건 로컬 검증 (k3d https-check)
+
+`overlays/https-check`는 ALB 뒤의 운영과 같은 쿠키 정책(`ALLOW_INSECURE_COOKIE=false`,
+라우팅 쿠키 Secure)을 k3d에서 재현한다. TLS 종료는 `edge.conf`를 마운트한 nginx
+컨테이너가 ALB 역할을 대신한다. 아래 순서를 빠뜨리면 원인이 다른 곳에 있는 것처럼
+보이는 실패가 난다.
+
+```bash
+# 1. 클러스터. edge가 serverlb:80 으로 보내므로 @loadbalancer 포트 매핑이 필수다.
+#    없으면 serverlb가 80을 열지 않아 502가 난다. 호스트 포트 번호는 무엇이든 된다.
+k3d cluster create emoselfie-https-check --servers 3 --servers-memory 4g \
+  --volume "$HOME/.emoselfie-models:/models@all" -p "8080:80@loadbalancer"
+
+# 2. Traefik이 edge의 X-Forwarded-Proto를 믿게 한다. 운영은 Ansible traefik.yml이
+#    같은 일을 한다. kustomization의 namespace 변환을 피하려고 따로 apply 한다.
+#    helm-install-traefik Job이 다시 돌 때까지 20초쯤 걸린다.
+kubectl apply -f k8s/overlays/https-check/traefik-config.yaml
+kubectl -n kube-system rollout status deploy/traefik
+kubectl -n kube-system get deploy traefik -o jsonpath='{.spec.template.spec.containers[0].args}' | tr ',' '\n' | grep trustedIPs
+
+# 3. 자체 서명 인증서와 edge. 클러스터를 다시 만들면 serverlb IP가 바뀌므로 edge도 재시작한다.
+openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=localhost" \
+  -addext "subjectAltName=DNS:localhost" -keyout /tmp/certs/tls.key -out /tmp/certs/tls.crt
+docker run -d --name edge --network k3d-emoselfie-https-check -p 8446:443 \
+  -v "$PWD/k8s/overlays/https-check/edge.conf:/etc/nginx/conf.d/default.conf:ro" \
+  -v /tmp/certs:/certs:ro nginx:alpine
+
+# 4. 이미지와 배포. backend 태그는 https-check 다.
+docker tag emoselfie-backend:local emoselfie-backend:https-check
+k3d image import emoselfie-backend:https-check emoselfie-models:local emoselfie-web:local -c emoselfie-https-check
+kubectl apply -k k8s/overlays/https-check
+kubectl -n https-check wait --for=condition=ready pod -l app=backend --timeout=300s
+
+# 5. 통합 스모크. 얼굴 이미지는 BE의 prepare_models.py --with-example 이 받는 fig1.jpg 를 쓴다.
+python tests/smoke_https.py --url https://localhost:8446 --ca /tmp/certs/tls.crt \
+  --image "$HOME/.emoselfie-models/fig1.jpg"
+```
+
+정리는 `docker rm -f edge && k3d cluster delete emoselfie-https-check`.
+
 ## 모델 가중치
 
 감정 인식 모델(`FER_static_ResNet50_AffectNet.pt`)이 94MB다. 이미지에 넣지 않고
@@ -546,6 +586,14 @@ redis+sentinel://redis-sentinel-0.redis-sentinel:26379,\
 **Job 재적용.** `migrate` Job은 완료 후 spec이 immutable이라 재배포 전에
 `kubectl delete job migrate` 가 필요하다. 기동 순서는 `wait-postgres`
 initContainer가 처리하므로 재시도에 기대지 않는다.
+
+**Pod 간 격리 없음.** backend는 Traefik만 거친다는 전제로 `--forwarded-allow-ips=*`를
+쓰지만 NetworkPolicy가 없어 클러스터 안 어떤 Pod든 직접 붙을 수 있다. 단일 테넌트라
+지금은 두고, 다른 앱이 같은 클러스터에 올라오면 backend·postgres·redis를 함께 격리한다.
+
+**ALB 헬스체크는 backend 상태다.** `/health/live`가 Ingress를 타고 backend에 닿으므로
+노드 건강 = backend 건강이다. backend가 전멸해도 ALB는 fail-open으로 노드에 계속 보내므로
+`/`는 web이 200, `/api`·`/socket.io`는 Traefik이 503을 낸다. 이때 점검 안내 화면은 FE 책임이다.
 
 ## 검증 기록
 

@@ -43,9 +43,3 @@ patches:
         path: /spec/storageClassName
         value: longhorn
 
-  # 운영의 라우팅 쿠키도 HTTPS에서만 전송한다.
-  - target: {kind: Service, name: backend}
-    patch: |
-      - op: replace
-        path: /metadata/annotations/traefik.ingress.kubernetes.io~1service.sticky.cookie.secure
-        value: "true"
