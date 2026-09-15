@@ -7,6 +7,9 @@
 > [INFRA #11](https://github.com/k8s11r/emoselfie-INFRA/issues/11)은 이 결정과
 > **독립적인 작업**이다. 혼동을 피하려고 "이슈 #11과의 관계" 절에서 따로 설명한다.
 
+>
+> **결정: server 3대 (2026-09-15)** — `terraform/main.tf`에 반영했다. 첫 server는
+> `--cluster-init`, 나머지 2대는 `--server`로 합류한다.
 ---
 
 ## 결론 먼저

@@ -2,8 +2,8 @@ locals {
   # Map keys are known before apply, so Terraform can create one attachment per
   # node even though the EC2 instance IDs are not known until apply.
   node_instance_ids = merge(
-    { server = aws_instance.server.id },
-    { for index, instance in aws_instance.agent : "agent-${index + 1}" => instance.id },
+    { "server-1" = aws_instance.server.id },
+    { for index, instance in aws_instance.server_join : "server-${index + 2}" => instance.id },
   )
 }
 

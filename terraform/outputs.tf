@@ -1,31 +1,26 @@
 output "server_public_ip" {
-  description = "Elastic IP of the k3s server. Stays the same across stop and start."
+  description = "Elastic IP of the first k3s server. kubeconfig and Ansible reach the API through it, and it stays the same across stop and start."
   value       = aws_eip.server.public_ip
 }
 
 output "server_private_ip" {
-  description = "Private IPv4 address used by agents to join the server."
+  description = "Private IPv4 address the other servers use to join the first server."
   value       = aws_instance.server.private_ip
-}
-
-output "agent_public_ips" {
-  description = "Public IPv4 addresses of the two k3s agents."
-  value       = aws_instance.agent[*].public_ip
 }
 
 output "node_public_ips" {
   description = "Public IPv4 addresses keyed by node name."
   value = merge(
-    { server = aws_eip.server.public_ip },
-    { for index, instance in aws_instance.agent : "agent-${index + 1}" => instance.public_ip },
+    { "server-1" = aws_eip.server.public_ip },
+    { for index, instance in aws_instance.server_join : "server-${index + 2}" => instance.public_ip },
   )
 }
 
 output "ssh_commands" {
   description = "Example SSH commands. Set the private key path to the local project1_key.pem location."
   value = merge(
-    { server = "ssh -i /path/to/project1_key.pem ubuntu@${aws_eip.server.public_ip}" },
-    { for index, instance in aws_instance.agent : "agent-${index + 1}" => "ssh -i /path/to/project1_key.pem ubuntu@${instance.public_ip}" },
+    { "server-1" = "ssh -i /path/to/project1_key.pem ubuntu@${aws_eip.server.public_ip}" },
+    { for index, instance in aws_instance.server_join : "server-${index + 2}" => "ssh -i /path/to/project1_key.pem ubuntu@${instance.public_ip}" },
   )
 }
 

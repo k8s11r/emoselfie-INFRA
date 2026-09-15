@@ -151,8 +151,8 @@ resource "aws_vpc_security_group_egress_rule" "all" {
 
 # 인스턴스를 중지했다 켜면 자동 할당 공인 IP가 바뀐다. 그러면 k3s가 부팅 때
 # 인증서에 박아 둔 주소와 달라져 kubectl이 TLS 검증에서 막히고, kubeconfig와
-# Ansible 인벤토리도 함께 틀어진다. server만 주소를 고정해 그 연쇄를 끊는다.
-# agent는 공인 IP로 통신하지 않으므로 필요 없다.
+# Ansible 인벤토리도 함께 틀어진다. 첫 server의 주소를 고정해 그 연쇄를 끊는다.
+# 나머지 server는 첫 server에 사설 IP로 합류하므로 공인 주소가 고정될 필요가 없다.
 resource "aws_eip" "server" {
   domain = "vpc"
 
@@ -179,10 +179,12 @@ resource "aws_instance" "server" {
   # 생성 뒤에 이뤄지므로, 메타데이터를 읽으면 아직 자동 할당 주소가 보여 인증서에
   # 그 값이 박힌다.
   user_data = templatefile("${path.module}/user-data-server.sh.tftpl", {
-    cluster_token    = local.cluster_token
-    k3s_channel      = var.k3s_channel
-    k3s_version      = var.k3s_version == null ? "" : var.k3s_version
-    server_public_ip = aws_eip.server.public_ip
+    cluster_token      = local.cluster_token
+    k3s_channel        = var.k3s_channel
+    k3s_version        = var.k3s_version == null ? "" : var.k3s_version
+    server_public_ip   = aws_eip.server.public_ip
+    join_server_url    = ""
+    join_delay_seconds = 0
   })
 
   user_data_replace_on_change = true
@@ -202,7 +204,7 @@ resource "aws_instance" "server" {
   }
 
   tags = {
-    Name       = "${local.name_prefix}-k3s-server"
+    Name       = "${local.name_prefix}-k3s-server-1"
     K3sRole    = "server"
     K3sCluster = local.name_prefix
   }
@@ -215,7 +217,11 @@ resource "aws_instance" "server" {
   }
 }
 
-resource "aws_instance" "agent" {
+# 나머지 server 2대. 첫 server의 embedded etcd에 합류해 control plane을 셋으로
+# 만든다. 워크로드는 역할과 무관하게 세 노드 모두에서 돈다. server가 한 대뿐이면
+# 그 노드가 죽을 때 재스케줄과 kubectl이 멈추고, 교체하면 클러스터가 사라진다
+# (docs/k3s-node-topology.md).
+resource "aws_instance" "server_join" {
   count = 2
 
   ami                         = data.aws_ami.ubuntu.id
@@ -226,11 +232,13 @@ resource "aws_instance" "agent" {
   vpc_security_group_ids      = [aws_security_group.k3s.id]
   iam_instance_profile        = aws_iam_instance_profile.node.name
 
-  user_data = templatefile("${path.module}/user-data-agent.sh.tftpl", {
-    cluster_token     = local.cluster_token
-    k3s_channel       = var.k3s_channel
-    k3s_version       = var.k3s_version == null ? "" : var.k3s_version
-    server_private_ip = aws_instance.server.private_ip
+  user_data = templatefile("${path.module}/user-data-server.sh.tftpl", {
+    cluster_token      = local.cluster_token
+    k3s_channel        = var.k3s_channel
+    k3s_version        = var.k3s_version == null ? "" : var.k3s_version
+    server_public_ip   = aws_eip.server.public_ip
+    join_server_url    = "https://${aws_instance.server.private_ip}:6443"
+    join_delay_seconds = count.index * 60
   })
 
   user_data_replace_on_change = true
@@ -250,8 +258,13 @@ resource "aws_instance" "agent" {
   }
 
   tags = {
-    Name       = "${local.name_prefix}-k3s-agent-${count.index + 1}"
-    K3sRole    = "agent"
+    Name       = "${local.name_prefix}-k3s-server-${count.index + 2}"
+    K3sRole    = "server"
     K3sCluster = local.name_prefix
   }
+}
+
+moved {
+  from = aws_instance.agent
+  to   = aws_instance.server_join
 }

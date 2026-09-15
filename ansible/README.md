@@ -1,6 +1,6 @@
 # Ansible 운영 배포
 
-Terraform이 EC2 생성, 노드 패키지 설치, k3s server/agent 구성을 담당한다. 이
+Terraform이 EC2 생성, 노드 패키지 설치, k3s server 3대 구성을 담당한다. 이
 Ansible playbook은 **로컬 Mac에서** Terraform이 만든 클러스터로 애플리케이션을
 배포한다. EC2에 Ansible로 직접 로그인해 k3s를 다시 설치하지 않는다.
 
