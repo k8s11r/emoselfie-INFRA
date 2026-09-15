@@ -8,8 +8,8 @@ resources:
 
 # EC2는 amd64 이미지를 사용한다. 아래 태그는 수동 kubectl 배포용 기본값이고,
 # Ansible 배포에서는 실제 ECR 저장소와 sha 태그로 다시 덮는다. models 이미지는
-# 가중치를 포함하는 이미지가 아니라 Longhorn 볼륨으로 다운로드하는 init
-# container다.
+# 가중치를 포함하는 이미지가 아니라 hostPath(노드 로컬 디스크)로 다운로드하는
+# init container다 (임시, docs/longhorn-removal-interim-hostpath.md).
 images:
   - name: emoselfie-backend
     newTag: amd64-v1
@@ -35,14 +35,6 @@ configMapGenerator:
 #     --from-literal=POSTGRES_USER=... --from-literal=DATABASE_URL=... ...
 
 patches:
-  # 모델 가중치를 3노드가 공유한다. 최초 1회만 받고 이후 pod는 재사용한다.
-  # Longhorn 설치가 선행돼야 한다 (README 참고).
-  - target: {kind: PersistentVolumeClaim, name: models}
-    patch: |
-      - op: add
-        path: /spec/storageClassName
-        value: longhorn
-
   # 운영의 라우팅 쿠키도 HTTPS에서만 전송한다.
   - target: {kind: Service, name: backend}
     patch: |
