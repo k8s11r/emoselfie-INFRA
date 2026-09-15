@@ -278,8 +278,8 @@ compose는 파일 하나씩 bind mount라 원하는 경로 아무 데나 놓을 
 
 ## 운영 (EC2 k3s)
 
-> 노드 역할(server 3대 vs server 1 + agent 2)은 아직 결정 전이다. 비교와 근거는
-> [`docs/k3s-node-topology.md`](../docs/k3s-node-topology.md) 에 있다.
+> 노드 역할은 server 3대(embedded etcd)로 정했다. 비교와 근거는
+> [`docs/k3s-node-topology.md`](../docs/k3s-node-topology.md) 참고.
 
 EC2가 amd64라 거기서 빌드한다. arm Mac에서 크로스 빌드하면 에뮬레이션이라
 느리고 이미지를 푸시/풀 하는 비용도 든다.

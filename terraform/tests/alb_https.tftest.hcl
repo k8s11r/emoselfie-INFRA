@@ -71,3 +71,23 @@ run "alb_https_routing" {
     error_message = "서비스 도메인의 A alias 레코드가 필요합니다."
   }
 }
+
+run "three_server_control_plane" {
+  command = plan
+
+  assert {
+    condition = (
+      aws_instance.server.tags["K3sRole"] == "server" &&
+      length(aws_instance.server_join) == 2 &&
+      alltrue([for instance in aws_instance.server_join : instance.tags["K3sRole"] == "server"])
+    )
+    error_message = "control plane은 server 3대여야 합니다. agent로 되돌아갔습니다."
+  }
+  assert {
+    condition = (
+      length(local.node_instance_ids) == 3 &&
+      alltrue([for name in keys(local.node_instance_ids) : startswith(name, "server-")])
+    )
+    error_message = "ALB 대상 키는 server-N이어야 합니다. Ansible이 ^server로 server 그룹을 고릅니다."
+  }
+}
