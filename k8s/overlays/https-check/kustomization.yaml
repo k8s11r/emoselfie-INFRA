@@ -1,0 +1,25 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: https-check
+
+resources:
+  - ../local
+  - namespace.yaml
+
+images:
+  - name: emoselfie-backend
+    newTag: https-check
+
+configMapGenerator:
+  - name: backend-env
+    behavior: merge
+    literals:
+      - ALLOW_INSECURE_COOKIE=false
+
+patches:
+  - target: {kind: Service, name: backend}
+    patch: |
+      - op: replace
+        path: /metadata/annotations/traefik.ingress.kubernetes.io~1service.sticky.cookie.secure
+        value: "true"

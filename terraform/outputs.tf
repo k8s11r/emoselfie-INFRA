@@ -40,13 +40,13 @@ output "cluster_check_command" {
 }
 
 output "load_balancer_dns_name" {
-  description = "DNS name of the internet-facing Network Load Balancer."
+  description = "DNS name of the internet-facing Application Load Balancer. The domain points here through an alias record."
   value       = aws_lb.application.dns_name
 }
 
-output "application_http_url" {
-  description = "HTTP URL for accessing the application through the Network Load Balancer."
-  value       = "http://${aws_lb.application.dns_name}"
+output "application_url" {
+  description = "HTTPS URL of the application. Port 80 redirects here."
+  value       = "https://${aws_route53_record.application.name}"
 }
 
 output "vpc_cidr" {

@@ -28,10 +28,11 @@
   BE에 전달하면 제출 시각 판정이 지연된다. BE의 업로드 한도는 계속 적용되지만
   기존 nginx의 전체 요청 4MB 제한과 완전히 같은 정책은 아니다.
 
-현재 Terraform은 **NLB의 TCP 80/443 전달**이다. NLB가 TLS를 종료하는 구성은 아니다.
-운영 HTTPS는 Traefik의 인증서·TLS 라우터 또는 별도의 TLS 종료 프록시로 준비해야 한다.
-터널 등 앞단이 TLS를 종료한다면 Traefik의 `forwardedHeaders.trustedIPs`를 실제
-프록시 피어 기준으로 별도 관리해야 한다. 아래 과거 ALB 설명을 현재 인프라로 간주하지 않는다.
+현재 Terraform은 **ALB에서 ACM 인증서로 TLS를 종료하고 노드 80으로 HTTP 전달**한다.
+외부 HTTP는 HTTPS로 리다이렉트한다. Traefik의 web entrypoint가 ALB의
+`X-Forwarded-Proto: https`를 보존하도록 `ansible/playbooks/traefik.yml`을 먼저 적용한다.
+이 playbook은 VPC CIDR과 ServiceLB 중계 시 사용하는 Pod CIDR을 신뢰하도록 설정한다.
+실제 피어가 이 범위에 들어가는지 배포 환경에서 확인해야 하며 `insecure: true`로 대체하지 않는다.
 BE의 기존 `--forwarded-allow-ips=*`는 유지했다. ClusterIP 자체는 접근 제어가 아니므로
 신뢰하지 않은 Pod가 프록시 헤더를 주입하지 못하도록 운영 접근 경계를 확인해야 한다.
 
