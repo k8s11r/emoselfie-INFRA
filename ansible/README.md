@@ -146,7 +146,7 @@ ansible-playbook playbooks/known-hosts.yml
 | 경우 | 대조 대상 |
 |---|---|
 | 이 프로젝트가 전에 신뢰한 키와 같다 (중지 후 시작) | `.generated/known_hosts` |
-| 새 키다 (인스턴스 교체·신규) | EC2 부팅 로그에 cloud-init이 남긴 지문 |
+| 그 밖의 경우 (인스턴스 교체·신규, 다른 컴퓨터에서 첫 배포) | EC2 부팅 로그에 남은 지문 |
 
 부팅 로그는 SSH를 거치지 않고 AWS API(`ec2:GetConsoleOutput`)로 가져오므로 중간에서
 바꿀 수 없다. 둘 다 맞지 않으면 **한 대라도 멈추고 파일을 쓰지 않는다.**
@@ -158,16 +158,31 @@ ansible-playbook playbooks/known-hosts.yml
 `StrictHostKeyChecking=yes`로 접속한다. 사용자의 `~/.ssh/known_hosts`는 쓰지도
 고치지도 않는다.
 
-### 검증할 수 없는 경우
+### 부팅할 때마다 지문을 남긴다
 
-cloud-init은 **인스턴스의 첫 부팅에만** 지문을 남긴다. 그래서 중지 후 시작한 인스턴스를
-이 컴퓨터에서 한 번도 검증한 적이 없으면(다른 컴퓨터에서 처음 배포하는 경우 등) 대조할
-기준이 없어 멈춘다. 이때는 EC2 Instance Connect나 Session Manager처럼 SSH 호스트 키와
-무관한 경로로 서버에 들어가 확인한 지문을 넣는다.
+cloud-init은 **인스턴스의 첫 부팅에만** 지문을 부팅 로그에 남긴다(`keys_to_console`이
+`PER_INSTANCE`). 그대로 두면 중지 후 시작한 인스턴스를 이 컴퓨터에서 한 번도 검증한 적이
+없을 때(다른 컴퓨터에서 처음 배포하는 경우 등) 대조할 기준이 없다.
 
-```bash
-sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
-```
+그래서 이 playbook은 검증을 마친 노드에
+`/var/lib/cloud/scripts/per-boot/emoselfie-print-ssh-host-keys.sh`를 설치한다
+(원본은 `ansible/files/print-ssh-host-keys.sh`). cloud-init의 `scripts_per_boot`가 매
+부팅 실행해 cloud-init과 같은 형식으로 지문을 `/dev/console`에 남기므로, 중지 후
+시작해도 부팅 로그로 검증할 수 있다. 콘솔에 쓴 내용이 부팅 로그 API에 보이기까지 30초
+안팎이 걸려 playbook이 기다렸다가 다시 조회한다.
+
+### 그래도 검증할 수 없는 경우
+
+- 인스턴스를 만든 뒤 이 playbook을 한 번도 돌리지 않은 채 중지 후 시작했다. 스크립트가
+  아직 없다
+- 부팅 직후라 부팅 로그에 아직 반영되지 않았다. 몇 분 뒤 다시 실행한다
+
+앞의 경우에는 이미 검증한 팀원의 `ansible/.generated/known_hosts`를 받아 같은 위치에
+넣는다. 서버의 공개키만 들어 있어 비밀은 아니지만, 바꿔치기되면 안 되므로 믿을 수 있는
+경로로 주고받는다.
+
+EC2 Instance Connect(브라우저 접속)와 Session Manager는 지금 구성으로는 쓸 수 없다.
+보안 그룹이 22번을 `admin_cidr`에서만 허용하고, 노드 IAM 역할에 SSM 권한이 없다.
 
 ## Traefik forwarded-header 설정
 
