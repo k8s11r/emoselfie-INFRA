@@ -165,7 +165,14 @@ k3d 레지스트리를 붙이는 편이 낫다 (`k3d registry create`).
 ## 모델 가중치
 
 감정 인식 모델(`FER_static_ResNet50_AffectNet.pt`)이 94MB다. 이미지에 넣지 않고
-pod가 뜰 때 받아서 공유 볼륨에 놓는다.
+pod가 뜰 때 받아서 노드 로컬 볼륨(`hostPath`)에 놓는다.
+
+> **[임시 조치]** 원래는 Longhorn(운영)/hostPath 공유 마운트(로컬)로 3노드가
+> 모델 하나를 공유했다. 94MB 고정 모델 하나를 위해 Longhorn을 상시 운영하는
+> 비용(노드당 메모리 점유)이 과하다고 판단해 걷어냈고, 지금은 노드마다 각자
+> 받아 로컬 디스크에 캐싱한다. 최종 방향은 모델을 이미지에 내장해 이 절 전체를
+> 없애는 것이다 — 배경은 [`docs/longhorn-removal-plan.md`](../docs/longhorn-removal-plan.md),
+> 지금 상태의 상세는 [`docs/longhorn-removal-interim-hostpath.md`](../docs/longhorn-removal-interim-hostpath.md) 참고.
 
 ### 왜 이미지에 안 넣나
 
@@ -185,13 +192,16 @@ CMD ["--directory", "/models"]
 본 컨테이너보다 먼저 실행되고 끝나는 컨테이너다. 여기서는 모델을 볼륨에 놓고
 종료하며, 그다음 backend 컨테이너가 그 볼륨을 읽기 전용으로 마운트해 시작한다.
 
-### 3노드가 하나를 공유한다
+### 노드마다 각자 받는다
 
-`models` PVC를 `ReadWriteMany`로 잡아 세 노드의 pod가 같은 볼륨을 동시에
-붙인다. **최초 1회만 받고 이후 생성되는 pod는 그대로 재사용한다.** 3노드지만
-실물은 하나다.
+`models` 볼륨은 `hostPath`라 pod가 뜬 노드의 로컬 디스크를 그대로 가리킨다.
+**같은 노드에 재스케줄되면 파일이 남아 있어 다시 안 받지만, 다른 노드로 가면
+그 노드에서 1회 다시 받는다.** `Deployment` + `topologySpreadConstraints`라
+어느 노드로 갈지 고정되지 않으므로 100% 보장되는 캐싱은 아니다 — 3노드 모두
+한 번씩 캐싱된 상태라면 이후 재스케줄에서 재다운로드가 발생할 확률은 낮다.
 
-`prepare_models.py`가 이미 이 방식에 맞게 쓰여 있다.
+`prepare_models.py`는 원래 공유 볼륨을 염두에 두고 멱등하게 짜여 있어 이
+방식에도 그대로 맞는다(파일이 있고 sha256이 맞으면 건너뜀).
 
 ```python
 if target.is_file():
@@ -207,25 +217,21 @@ os.replace(temporary, target)   # 임시 파일에 받고 원자적으로 교체
 초기화해도 반쯤 쓰인 파일이 보이는 일이 없다. 최악의 경우 두 pod가 각자 받아
 같은 결과를 쓰는 정도다.
 
-`ReadWriteMany`를 지원하는 스토리지가 필요하다. k3s 기본 local-path는 노드
-종속이라 안 된다. 로컬과 운영이 다른 방식으로 같은 접근 모드를 만든다.
+`hostPath`라 로컬(k3d)과 운영(EC2 k3s) 모두 별도 스토리지 컴포넌트 없이 같은
+방식으로 동작한다. k3d 노드도 EC2 노드도 각자 컨테이너/인스턴스 로컬 디스크에
+받는다 — 클러스터 생성 시 특별한 `--volume` 지정이나 추가 설치가 필요 없다.
 
 | | 로컬 k3d | EC2 k3s |
 |---|---|---|
-| 방식 | 호스트 디렉터리를 세 노드에 마운트 | Longhorn 복제 볼륨 |
-| 추가 컴포넌트 | 없음 | Longhorn |
-| PV | `models-k3d-hostpath` (정적) | 동적 프로비저닝 |
+| 방식 | 노드(컨테이너) 로컬 디스크 | 노드(EC2) 로컬 디스크 |
+| 추가 컴포넌트 | 없음 | 없음 |
+| 공유 여부 | 노드마다 독립 (재사용 안 됨) | 노드마다 독립 |
 
 ### 로컬 (k3d)
 
-k3d는 노드가 전부 같은 Docker 호스트의 컨테이너다. 호스트 디렉터리 하나를 세
-노드에 모두 물리면 그게 곧 공유 스토리지가 된다. 클러스터 생성 시 지정한다.
-
 ```bash
-mkdir -p "$HOME/.emoselfie-models"
 k3d cluster create mycluster --servers 3 \
   --servers-memory 4g \
-  --volume "$HOME/.emoselfie-models:/models@all" \
   -p "80:80@loadbalancer" -p "443:443@loadbalancer"
 ```
 
@@ -244,16 +250,8 @@ Docker Desktop 메모리는 12GB로 둔다(4GB × 3). CPU는 미러링되지 않
 노드별 CPU 제한 옵션이 없어 노드가 호스트 코어 수(8)를 그대로 보고한다.
 t3.medium은 2 vCPU이므로 CPU 압박은 로컬에서 재현되지 않는다.
 
-`--volume` 은 생성 시점 옵션이라 기존 클러스터에 추가할 수 없다. 이미 있으면
-`k3d cluster delete mycluster` 후 다시 만들어야 한다.
-
-서로 다른 노드의 pod 두 개가 같은 파일을 보는 것으로 확인했다.
-
-```
-rwxprobe-...-k42wq   k3d-mycluster-server-2
-rwxprobe-...-kvsmh   k3d-mycluster-server-1
-→ 두 pod 모두 상대가 쓴 파일을 본다
-```
+노드(컨테이너)마다 독립된 파일시스템이라, pod가 다른 노드로 재스케줄되면 그
+노드에서 모델을 다시 받는다. 94MB라 로컬 개발에서는 체감되지 않는다.
 
 backend는 `requests == limits` 로 2Gi를 잡고 로컬도 같은 값을 쓴다(base에 있다).
 4GB 노드 3대에 replica 3개가 하나씩 들어가므로, EC2에서 스케줄이 되는지를 맥에서
@@ -261,23 +259,8 @@ backend는 `requests == limits` 로 2Gi를 잡고 로컬도 같은 값을 쓴다
 
 ### 운영 (EC2 k3s)
 
-**Longhorn 설치가 선행돼야 한다.**
-
-```bash
-# 각 EC2 노드에서
-sudo apt-get install -y open-iscsi nfs-common
-sudo systemctl enable --now iscsid
-
-# 클러스터에
-kubectl apply -f https://raw.githubusercontent.com/longhorn/longhorn/v1.12.1/deploy/longhorn.yaml
-kubectl -n longhorn-system get pods -w    # 전부 Running 확인
-```
-
-Longhorn 자체가 노드당 수백 MB를 쓴다. t3.medium(4GB) 3대에서는 backend가
-이미 대부분을 차지하므로, 메모리가 빠듯하면 backend replica를 줄여야 할 수 있다.
-
-k3d에서는 Longhorn을 쓸 수 없다. 노드가 최소 이미지라 `iscsiadm`도 `mount.nfs`도
-없고 설치할 패키지 관리자도 없다. 위 호스트 디렉터리 방식을 쓰는 이유다.
+별도 설치 없이 그대로 배포하면 된다. `initContainer`가 노드 로컬 디스크
+(`/models`)에 모델을 받고, 같은 노드에 재스케줄된 pod는 재사용한다.
 
 ### 경로
 
@@ -300,8 +283,6 @@ compose는 파일 하나씩 bind mount라 원하는 경로 아무 데나 놓을 
 
 EC2가 amd64라 거기서 빌드한다. arm Mac에서 크로스 빌드하면 에뮬레이션이라
 느리고 이미지를 푸시/풀 하는 비용도 든다.
-
-Longhorn 설치가 선행돼야 한다 (위 "모델 가중치" 참고).
 
 Secret은 저장소에 두지 않는다. 배포 전에 클러스터에 직접 만든다.
 
