@@ -1,8 +1,12 @@
 # 단일 인스턴스다. HA가 아니다.
 #
-# k3s 기본 스토리지가 local-path라 PVC가 특정 노드 디스크에 묶인다. 그 노드가
-# 죽으면 pod가 다른 노드로 재스케줄되지 못하고 Pending에 갇힌다. 즉 3노드
-# 구성에서 여기만 단일 장애점으로 남는다.
+# local-path를 명시한다. 비워 두면 클러스터의 기본 StorageClass를 따르는데,
+# Longhorn이 설치돼 있던 동안 기본값이 둘이라 나중에 생긴 longhorn에 붙었다.
+# redis와 같은 방식으로 이름을 적어 설치 순서에 흔들리지 않게 한다.
+#
+# local-path라 PVC가 특정 노드 디스크에 묶인다. 그 노드가 죽으면 pod가 다른
+# 노드로 재스케줄되지 못하고 Pending에 갇힌다. 즉 3노드 구성에서 여기만 단일
+# 장애점으로 남는다.
 #
 # 진짜 HA가 필요해지면 CloudNativePG 오퍼레이터로 교체한다. 공유 스토리지 없이
 # 스트리밍 복제 + 자동 failover를 하므로 local-path 위에서도 동작한다.
@@ -69,6 +73,7 @@ spec:
         name: postgres-data
       spec:
         accessModes: [ReadWriteOnce]
+        storageClassName: local-path
         resources:
           requests:
             storage: 5Gi
