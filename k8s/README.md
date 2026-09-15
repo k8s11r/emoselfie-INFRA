@@ -166,41 +166,58 @@ k3d 레지스트리를 붙이는 편이 낫다 (`k3d registry create`).
 
 `overlays/https-check`는 ALB 뒤의 운영과 같은 쿠키 정책(`ALLOW_INSECURE_COOKIE=false`,
 라우팅 쿠키 Secure)을 k3d에서 재현한다. TLS 종료는 `edge.conf`를 마운트한 nginx
-컨테이너가 ALB 역할을 대신한다. 아래 순서를 빠뜨리면 원인이 다른 곳에 있는 것처럼
-보이는 실패가 난다.
+컨테이너가 ALB 역할을 대신한다. 평소 개발은 `overlays/local`로 충분하고, 쿠키·프록시
+헤더·TLS를 건드렸거나 운영 배포 직전에 이걸 돌린다. `https-check`는 `local`을
+포함하므로 이것 하나로 둘 다 검증된다.
+
+### 스크립트
+
+`scripts/https-check.sh`가 아래 전 과정을 대신한다.
 
 ```bash
-# 1. 클러스터. edge가 serverlb:80 으로 보내므로 @loadbalancer 포트 매핑이 필수다.
-#    없으면 serverlb가 80을 열지 않아 502가 난다. 호스트 포트 번호는 무엇이든 된다.
-k3d cluster create emoselfie-https-check --servers 3 --servers-memory 4g \
-  --volume "$HOME/.emoselfie-models:/models@all" -p "8080:80@loadbalancer"
-
-# 2. Traefik이 edge의 X-Forwarded-Proto를 믿게 한다. 운영은 Ansible traefik.yml이
-#    같은 일을 한다. kustomization의 namespace 변환을 피하려고 따로 apply 한다.
-#    helm-install-traefik Job이 다시 돌 때까지 20초쯤 걸린다.
-kubectl apply -f k8s/overlays/https-check/traefik-config.yaml
-kubectl -n kube-system rollout status deploy/traefik
-kubectl -n kube-system get deploy traefik -o jsonpath='{.spec.template.spec.containers[0].args}' | tr ',' '\n' | grep trustedIPs
-
-# 3. 자체 서명 인증서와 edge. 클러스터를 다시 만들면 serverlb IP가 바뀌므로 edge도 재시작한다.
-openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=localhost" \
-  -addext "subjectAltName=DNS:localhost" -keyout /tmp/certs/tls.key -out /tmp/certs/tls.crt
-docker run -d --name edge --network k3d-emoselfie-https-check -p 8446:443 \
-  -v "$PWD/k8s/overlays/https-check/edge.conf:/etc/nginx/conf.d/default.conf:ro" \
-  -v /tmp/certs:/certs:ro nginx:alpine
-
-# 4. 이미지와 배포. backend 태그는 https-check 다.
-docker tag emoselfie-backend:local emoselfie-backend:https-check
-k3d image import emoselfie-backend:https-check emoselfie-models:local emoselfie-web:local -c emoselfie-https-check
-kubectl apply -k k8s/overlays/https-check
-kubectl -n https-check wait --for=condition=ready pod -l app=backend --timeout=300s
-
-# 5. 통합 스모크. 얼굴 이미지는 BE의 prepare_models.py --with-example 이 받는 fig1.jpg 를 쓴다.
-python tests/smoke_https.py --url https://localhost:8446 --ca /tmp/certs/tls.crt \
-  --image "$HOME/.emoselfie-models/fig1.jpg"
+scripts/https-check.sh all      # 켜고 → 검사하고 → 끈다. 실패해도 끈다.
+scripts/https-check.sh up       # 켜기만. https://localhost:8446 을 브라우저로 열어볼 수 있다.
+scripts/https-check.sh test     # 켜진 상태에서 검사만. 반복 가능.
+scripts/https-check.sh status   # 켜져 있는지, Pod 상태
+scripts/https-check.sh down     # 끄기
 ```
 
-정리는 `docker rm -f edge && k3d cluster delete emoselfie-https-check`.
+전제는 두 가지다. 없으면 스크립트가 멈추고 알려준다.
+
+- 이미지 `emoselfie-backend:local`, `emoselfie-models:local`, `emoselfie-web:local` (위 로컬 절 참고)
+- `$HOME/.emoselfie-models`에 가중치와 얼굴 이미지 `fig1.jpg`.
+  이미지는 `be/`에서 `uv run python scripts/prepare_models.py --directory ~/.emoselfie-models --with-example`
+
+`test`가 검사하는 것:
+
+| 단계 | 통과 기준 |
+|---|---|
+| 반영 확인 | backend Service sticky `secure=true`, web Pod QoS `Guaranteed` |
+| 쿠키 | `es_route`(Traefik)·`es_uid`(BE) 둘 다 `Secure` |
+| 정적 서빙 | `/` 200, `/r/abc` SPA fallback 200, web Pod 자체 `/health/live` `ok` |
+| `tests/smoke_https.py` | 2인(WebSocket 1·polling 1)이 서로 다른 Pod에 붙어 3라운드 실제 추론까지 완료 |
+| 장애 분리 | backend를 0으로 줄여도 web 3/3 Ready, `/` 200, `/api` 503 |
+
+인증서와 파이썬 venv는 `.https-check/`에 남는다(`.gitignore`). `down`은 인증서만 지우고
+venv는 다음 실행을 위해 둔다.
+
+### 스크립트가 하는 일 (손으로 할 때)
+
+순서를 빠뜨리면 원인이 다른 곳에 있는 것처럼 보이는 실패가 난다.
+
+1. **클러스터** — `k3d cluster create emoselfie-https-check --servers 3 -p "8080:80@loadbalancer"`.
+   edge가 `serverlb:80`으로 보내므로 `@loadbalancer` 포트 매핑이 없으면 serverlb가
+   80을 열지 않아 502가 난다. 호스트 포트 번호 자체는 무엇이든 된다.
+2. **Traefik trustedIPs** — `kubectl apply -f k8s/overlays/https-check/traefik-config.yaml`.
+   운영은 Ansible `traefik.yml`이 같은 일을 한다. 이게 없으면 Traefik이 edge의
+   `X-Forwarded-Proto: https`를 `http`로 덮어써 BE의 same-origin 검사가 403을 낸다.
+   kustomization의 namespace 변환이 `kube-system`을 덮어쓰면 조용히 무시되므로
+   resources에 넣지 않고 따로 apply 한다. helm-install Job이 다시 도는 데 20초쯤 걸린다.
+3. **edge** — 자체 서명 인증서를 만들고 `nginx:alpine`을 `k3d-emoselfie-https-check`
+   네트워크에 붙여 8446→443. 클러스터를 다시 만들면 serverlb IP가 바뀌므로 edge도 재시작한다.
+4. **배포** — backend 이미지를 `https-check` 태그로 import, `kubectl apply -k k8s/overlays/https-check`.
+5. **검사** — 위 표.
+6. **정리** — `docker rm -f edge && k3d cluster delete emoselfie-https-check`.
 
 ## 모델 가중치
 

@@ -11,3 +11,4 @@ ansible/group_vars/all/vault.yml
 
 # 로컬 실행 편의 스크립트. 저장소로 공유하지 않는다.
 run_local.sh
+.https-check/
