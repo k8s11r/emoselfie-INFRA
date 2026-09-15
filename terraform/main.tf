@@ -135,20 +135,7 @@ resource "aws_vpc_security_group_ingress_rule" "http" {
   from_port                    = 80
   to_port                      = 80
   ip_protocol                  = "tcp"
-  description                  = "HTTP from the Network Load Balancer"
-
-  lifecycle {
-    create_before_destroy = true
-  }
-}
-
-resource "aws_vpc_security_group_ingress_rule" "https" {
-  security_group_id            = aws_security_group.k3s.id
-  referenced_security_group_id = aws_security_group.load_balancer.id
-  from_port                    = 443
-  to_port                      = 443
-  ip_protocol                  = "tcp"
-  description                  = "HTTPS from the Network Load Balancer"
+  description                  = "HTTP from the Application Load Balancer"
 
   lifecycle {
     create_before_destroy = true
@@ -162,6 +149,23 @@ resource "aws_vpc_security_group_egress_rule" "all" {
   description       = "Outbound internet and AWS API access"
 }
 
+# 인스턴스를 중지했다 켜면 자동 할당 공인 IP가 바뀐다. 그러면 k3s가 부팅 때
+# 인증서에 박아 둔 주소와 달라져 kubectl이 TLS 검증에서 막히고, kubeconfig와
+# Ansible 인벤토리도 함께 틀어진다. server만 주소를 고정해 그 연쇄를 끊는다.
+# agent는 공인 IP로 통신하지 않으므로 필요 없다.
+resource "aws_eip" "server" {
+  domain = "vpc"
+
+  tags = {
+    Name = "${local.name_prefix}-k3s-server"
+  }
+}
+
+resource "aws_eip_association" "server" {
+  allocation_id = aws_eip.server.id
+  instance_id   = aws_instance.server.id
+}
+
 resource "aws_instance" "server" {
   ami                         = data.aws_ami.ubuntu.id
   instance_type               = var.instance_type
@@ -171,10 +175,14 @@ resource "aws_instance" "server" {
   vpc_security_group_ids      = [aws_security_group.k3s.id]
   iam_instance_profile        = aws_iam_instance_profile.node.name
 
+  # 메타데이터로 부팅 당시의 주소를 읽지 않고 EIP를 직접 넣는다. 연결은 인스턴스
+  # 생성 뒤에 이뤄지므로, 메타데이터를 읽으면 아직 자동 할당 주소가 보여 인증서에
+  # 그 값이 박힌다.
   user_data = templatefile("${path.module}/user-data-server.sh.tftpl", {
-    cluster_token = local.cluster_token
-    k3s_channel   = var.k3s_channel
-    k3s_version   = var.k3s_version == null ? "" : var.k3s_version
+    cluster_token    = local.cluster_token
+    k3s_channel      = var.k3s_channel
+    k3s_version      = var.k3s_version == null ? "" : var.k3s_version
+    server_public_ip = aws_eip.server.public_ip
   })
 
   user_data_replace_on_change = true
