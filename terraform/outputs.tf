@@ -48,3 +48,8 @@ output "application_http_url" {
   description = "HTTP URL for accessing the application through the Network Load Balancer."
   value       = "http://${aws_lb.application.dns_name}"
 }
+
+output "vpc_cidr" {
+  description = "CIDR block of the VPC the cluster runs in. Ansible passes it to Traefik as the trusted proxy range."
+  value       = data.aws_vpc.default.cidr_block
+}

@@ -1,4 +1,9 @@
 ---
+# Traefik의 forwarded-header 설정은 앱 배포와 독립이지만 같은 클러스터를
+# 전제로 한다. 단독 실행도 되도록 별도 playbook으로 두고 여기서 먼저 가져온다
+# (이슈 #11).
+- ansible.builtin.import_playbook: traefik.yml
+
 - name: Deploy Emoselfie to the Terraform-managed k3s cluster
   hosts: localhost
   gather_facts: false
@@ -191,6 +196,24 @@
       changed_when: >-
         ' created' in longhorn_apply.stdout or
         ' configured' in longhorn_apply.stdout
+
+    - name: Wait until Longhorn creates pods
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ kubeconfig_path }}"
+          - get
+          - pods
+          - --namespace
+          - longhorn-system
+          - -o
+          - name
+      register: longhorn_pods
+      retries: 60
+      delay: 5
+      until: longhorn_pods.stdout_lines | length > 0
+      changed_when: false
 
     - name: Wait for Longhorn pods
       ansible.builtin.command:
@@ -443,7 +466,7 @@
           - "{{ kubernetes_namespace }}"
           - rollout
           - status
-          - deployment/web
+          - daemonset/web
           - --timeout=5m
       changed_when: false
 
