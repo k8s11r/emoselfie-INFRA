@@ -56,7 +56,8 @@ terraform output -raw application_url
 ```
 
 Target Group은 Traefik Ingress를 통과하는 `/health/live` 요청으로 각 노드의 상태를
-확인한다. Socket.IO 핸드셰이크가 polling으로 시작하므로 ALB 쿠키로 노드를 고정한다.
+확인한다. FE는 WebSocket 우선이다. polling 사용 시 ALB 쿠키는 노드를,
+Traefik의 `es_route` 쿠키는 backend Pod를 선택한다. Service의 `ClientIP` affinity는 사용하지 않는다.
 
 ALB는 `X-Forwarded-Proto: https`를 붙여 보낸다. Traefik이 이 헤더를 신뢰하도록
 `ansible/playbooks/traefik.yml`이 설정하며, 그것이 없으면 `/api/` POST가

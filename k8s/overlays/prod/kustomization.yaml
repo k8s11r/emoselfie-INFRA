@@ -27,6 +27,7 @@ configMapGenerator:
     behavior: merge
     literals:
       - APP_ENV=production
+      - ALLOW_INSECURE_COOKIE=false
       - INFERENCE_BACKEND=real
 
 # Secret은 저장소에 두지 않는다. 배포 전에 클러스터에 직접 만든다.
@@ -42,10 +43,9 @@ patches:
         path: /spec/storageClassName
         value: longhorn
 
-  # Socket.IO 핸드셰이크가 polling으로 시작하므로 replica가 2개 이상이면
-  # 같은 클라이언트가 같은 pod로 가야 한다.
+  # 운영의 라우팅 쿠키도 HTTPS에서만 전송한다.
   - target: {kind: Service, name: backend}
     patch: |
-      - op: add
-        path: /spec/sessionAffinity
-        value: ClientIP
+      - op: replace
+        path: /metadata/annotations/traefik.ingress.kubernetes.io~1service.sticky.cookie.secure
+        value: "true"

@@ -2,6 +2,70 @@
 
 로컬 k3d와 EC2 k3s에 같은 매니페스트를 올린다. 차이는 오버레이로만 표현한다.
 
+## 현재 요청 경로와 전환 순서
+
+표준 Ingress의 Prefix 규칙으로 `/api`, `/media`, `/socket.io`, `/health`는
+`backend:8000`에, 나머지는 `web:80`에 전달한다. 경로 접두사는 제거하지 않는다.
+`web`은 정적 파일과 SPA fallback만 제공하고 Pod의 `/health/live`에는 직접
+`ok`를 반환한다. 외부 `/health/*`는 backend 검사이므로 web의 readiness와 별개다.
+
+```text
+브라우저 -> Traefik -> backend  (/api, /media, /socket.io, /health)
+                   -> web      (그 밖의 경로, 정적 파일)
+```
+
+- BE `SocketGateway`가 Engine.IO 앞에서 `ws/wss` 헤더를 `http/https`로 정규화한다.
+  Origin 검사는 끄지 않으며 Host의 포트를 보존한다.
+- 로컬 오버레이는 `ALLOW_INSECURE_COOKIE=true`를 명시한다. BE는 개발 환경의
+  HTTP 요청에만 Secure를 생략한다. HTTPS 요청과 운영에서는 Secure를 유지한다.
+- `es_route`는 Traefik의 Pod 선택 쿠키이며 앱 인증 쿠키 `es_uid`와 다르다.
+  FE는 WebSocket 우선이지만 polling 요청도 동일 Pod로 보내도록 설정한다.
+  Traefik은 Pod로 직접 분산하며 Service의 `ClientIP` affinity를 사용하지 않는다.
+  운영에서는 라우팅 쿠키에도 Secure를 설정하므로 HTTPS가 선행 조건이다.
+- Compose는 `compose/web/default.conf`의 기존 nginx 프록시를 유지한다.
+  K8s의 정적 서버 설정과 공유하지 않는다.
+- 업로드에 Traefik `Buffering` 미들웨어를 붙이지 않는다. 본문 전체를 받은 뒤
+  BE에 전달하면 제출 시각 판정이 지연된다. BE의 업로드 한도는 계속 적용되지만
+  기존 nginx의 전체 요청 4MB 제한과 완전히 같은 정책은 아니다.
+
+현재 Terraform은 **ALB에서 ACM 인증서로 TLS를 종료하고 노드 80으로 HTTP 전달**한다.
+외부 HTTP는 HTTPS로 리다이렉트한다. Traefik의 web entrypoint가 ALB의
+`X-Forwarded-Proto: https`를 보존하도록 `ansible/playbooks/traefik.yml`을 먼저 적용한다.
+이 playbook은 VPC CIDR과 ServiceLB 중계 시 사용하는 Pod CIDR을 신뢰하도록 설정한다.
+실제 피어가 이 범위에 들어가는지 배포 환경에서 확인해야 하며 `insecure: true`로 대체하지 않는다.
+BE의 기존 `--forwarded-allow-ips=*`는 유지했다. ClusterIP 자체는 접근 제어가 아니므로
+신뢰하지 않은 Pod가 프록시 헤더를 주입하지 못하도록 운영 접근 경계를 확인해야 한다.
+
+### 적용과 복귀
+
+기존 클러스터에 전체 `apply -k`를 한 번에 실행하면 Ingress 반영보다 정적 nginx가
+먼저 준비되어 API가 잠시 끊길 수 있다. 기존 migration Job도 이번 라우팅 변경과 분리한다.
+
+1. 변경 전 Ingress, backend Service, web DaemonSet 및 nginx ConfigMap을 보관한다.
+2. 보정된 BE 이미지를 새 태그로 먼저 배포하고 readiness를 확인한다. 로컬은
+   `ALLOW_INSECURE_COOKIE=true`도 먼저 반영한다. 기존 nginx와도 호환된다.
+3. backend Service의 sticky 설정과 Ingress 경로만 적용한다. 기존 nginx 프록시는
+   그대로 둔 채 HTTP/HTTPS 세션, Origin 거부, WebSocket과 강제 polling을 확인한다.
+4. 통과하면 정적 nginx ConfigMap과 web DaemonSet을 적용한다. `/`, `/r/...`,
+   `/assets/...`, web Pod 자체 `/health/live`, 외부 backend health를 각각 확인한다.
+5. 복귀 시 기존 nginx ConfigMap·web DaemonSet을 먼저 복원하고 Ready를 기다린 후
+   기존 Ingress·backend Service를 복원한다. BE 호환성 보정은 남겨도 된다.
+
+`kubectl kustomize` 결과를 리소스별로 나누어 위 순서로 적용한다. 실행 대상 context와
+namespace, BE 새 이미지 태그, HTTPS 종료 위치를 배포 전에 확인한다.
+
+### 전환 전 검증 기록 (2026-09-14)
+
+BE 기본 pytest는 172개 통과했다. 이 중 프록시 호환성 회귀 테스트 21개는
+Engine.IO 핸드셰이크, Origin·포트 거부, 쿠키 복원, 개발 옵션 제한과 Uvicorn의
+신뢰 프록시 처리를 검사한다. DB·Redis 통합 및 실제 모델 테스트 61개는 기본 게이트로
+미실행했다. Ruff lint/format과 mypy도 통과했다.
+
+local/prod Kustomize 조립 및 경로·포트·쿠키 정책·ConfigMap 참조 검사, Compose
+구문 검사, 두 nginx 설정의 `nginx -t`가 통과했다. 기존 FE 이미지에 새 설정을
+마운트한 격리 컨테이너에서 health, SPA fallback, 실제 JS 번들 및 캐시 헤더를 확인했다.
+실제 클러스터 적용, Traefik 경유 다중 Pod polling 및 운영 TLS 검증은 아직 하지 않았다.
+
 ```
 k8s/
 ├── base/                 # 환경 공통
@@ -254,7 +318,10 @@ kubectl create secret generic emoselfie-secrets -n emoselfie \
 kubectl apply -k k8s/overlays/prod
 ```
 
-## 오리진과 프로토콜 전달
+## 과거 nginx 프록시 구조의 문제 기록
+
+아래는 전환 전 구조에서의 관찰과 해결 기록이다. 현재 설정·배포 절차는 위
+"현재 요청 경로와 전환 순서"를 따른다. 특히 nginx map 보정은 이제 Compose에만 남아 있다.
 
 요청이 backend에 닿기까지 홉이 여럿이고, **홉이 하나 늘 때마다
 `X-Forwarded-Proto` 가 망가질 여지가 생긴다.**

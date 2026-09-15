@@ -69,6 +69,7 @@ resource "aws_lb" "application" {
   subnets            = slice(local.subnet_ids, 0, 3)
   security_groups    = [aws_security_group.load_balancer.id]
 
+  # 현재 Socket.IO ping은 25초다. 일시적인 지연에도 연결을 유지할 여유를 둔다.
   # 기본값 60초는 Socket.IO 연결에 빠듯하다. 핑 주기가 바뀌거나 라운드 사이
   # 유휴 구간이 길어지면 ALB가 먼저 끊는다. 여유를 둔다 (spec 13장).
   idle_timeout = 300
@@ -85,6 +86,8 @@ resource "aws_lb_target_group" "http" {
   target_type = "instance"
   vpc_id      = data.aws_vpc.default.id
 
+  # FE는 WebSocket 우선이다. polling 사용 시 ALB 쿠키는 노드를,
+  # Traefik의 es_route 쿠키는 backend Pod를 선택한다. ClientIP affinity는 쓰지 않는다.
   # Socket.IO 핸드셰이크가 polling으로 시작하므로 한 사용자의 요청이 노드를
   # 오가면 세션이 깨진다. ALB 쿠키로 노드를 고정한다. 노드 안에서 pod를 고정하는
   # 것은 backend Service의 sessionAffinity가 맡는다 (k8s/base/ingress.yaml 주석).

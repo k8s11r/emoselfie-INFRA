@@ -34,6 +34,7 @@ configMapGenerator:
     behavior: merge
     literals:
       - APP_ENV=development
+      - ALLOW_INSECURE_COOKIE=true
       - INFERENCE_BACKEND=real
 
 # 로컬 전용 값이다. 운영에서는 클러스터에 직접 만든 Secret을 쓴다.
