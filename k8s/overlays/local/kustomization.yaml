@@ -5,7 +5,6 @@ namespace: local
 
 resources:
   - ../../base
-  - models-pv.yaml
 
 # 로컬은 arm64 네이티브다. mediapipe 1.0.1과 torch 2.8.0 모두 manylinux_2_28_aarch64
 # 휠이 있고 pyproject.toml이 이미 플랫폼별로 분기하므로, 추론을 그대로 쓴다.
@@ -57,14 +56,3 @@ patches:
       - op: replace
         path: /metadata/annotations/traefik.ingress.kubernetes.io~1service.sticky.cookie.secure
         value: "false"
-  # Longhorn은 노드에 open-iscsi가 필요한데 k3d 노드는 최소 이미지라 설치할 수
-  # 없다(iscsiadm, mount.nfs 둘 다 없음). 대신 호스트 디렉터리를 세 노드에 모두
-  # 물려 같은 ReadWriteMany를 만든다. models-pv.yaml 참고.
-  - target: {kind: PersistentVolumeClaim, name: models}
-    patch: |
-      - op: add
-        path: /spec/storageClassName
-        value: ""
-      - op: add
-        path: /spec/volumeName
-        value: models-k3d-hostpath

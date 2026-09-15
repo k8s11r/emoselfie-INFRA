@@ -1,0 +1,291 @@
+---
+# Terraform이 만든 노드의 SSH 호스트 키를 검증해 프로젝트 전용 known_hosts를
+# 만든다. 다른 playbook은 이 파일에 있는 키로만 노드를 신뢰한다.
+#
+# 인스턴스를 교체하면 같은 주소(EIP)에 새 호스트 키가 생겨 SSH가 접속을 거부한다.
+# 검사를 끄면 그 경고와 중간자 공격을 구분할 수 없으므로, 끄지 않고 검증한다.
+#
+# 신뢰 기준은 둘 중 하나다.
+#   1. 이 파일에 이미 있던 키와 같다 (중지 후 시작처럼 키가 그대로인 경우)
+#   2. EC2 부팅 로그에 cloud-init이 남긴 지문과 같다 (새로 만든 인스턴스)
+#
+# 부팅 로그는 SSH를 거치지 않고 AWS API로 가져오므로 중간에서 바꿀 수 없다.
+# cloud-init은 인스턴스의 첫 부팅에만 지문을 남긴다(keys_to_console이
+# PER_INSTANCE). 중지 후 시작해도 2로 검증할 수 있도록, 검증을 마친 노드에 매
+# 부팅마다 지문을 남기는 스크립트를 설치한다(마지막 play).
+#
+# 단독 실행도 된다. Vault를 읽지 않는다.
+#
+#   ansible-playbook playbooks/known-hosts.yml
+
+- name: Collect Terraform nodes for host key verification
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    repo_root: "{{ playbook_dir }}/../.."
+    terraform_dir: "{{ repo_root }}/terraform"
+
+  tasks:
+    - name: Read all node public IPs from Terraform
+      ansible.builtin.command:
+        argv:
+          - terraform
+          - "-chdir={{ terraform_dir }}"
+          - output
+          - -json
+          - node_public_ips
+      register: terraform_node_ips
+      changed_when: false
+      check_mode: false
+
+    # 노드를 병렬로 검증하려고 노드마다 가상의 호스트를 만든다. 노드에 접속하지
+    # 않고 모든 명령은 이 컴퓨터에서 돈다.
+    - name: Add one local verification host per node
+      ansible.builtin.add_host:
+        name: "hostkey-{{ item.key }}"
+        groups: host_key_targets
+        ansible_connection: local
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+        node_name: "{{ item.key }}"
+        node_ip: "{{ item.value }}"
+      loop: "{{ (terraform_node_ips.stdout | from_json) | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+- name: Verify the SSH host key of each node
+  hosts: host_key_targets
+  gather_facts: false
+  # 한 대라도 검증에 실패하면 known_hosts를 쓰지 않고 멈춘다. 일부만 기록하면 뒤의
+  # playbook이 검증되지 않은 상태를 정상으로 오해한다.
+  any_errors_fatal: true
+
+  vars_files:
+    - "{{ playbook_dir }}/../group_vars/all/main.yml"
+
+  vars:
+    known_hosts_file: "{{ playbook_dir }}/../.generated/known_hosts"
+    # cloud-init이 콘솔에 남기는 줄: 256 SHA256:xxxx root@ip-172-31-48-6 (ED25519)
+    boot_log_fingerprint_pattern: '(SHA256:\S+) root@\S+ \(ED25519\)'
+
+  tasks:
+    - name: Find the EC2 instance behind the node address
+      ansible.builtin.command:
+        argv:
+          - aws
+          - ec2
+          - describe-instances
+          - --region
+          - "{{ aws_region }}"
+          - --filters
+          - "Name=ip-address,Values={{ node_ip }}"
+          - Name=instance-state-name,Values=running
+          - --query
+          - "Reservations[0].Instances[0].InstanceId"
+          - --output
+          - text
+      register: instance_lookup
+      changed_when: false
+      check_mode: false
+      failed_when: >-
+        instance_lookup.rc != 0 or
+        not (instance_lookup.stdout | trim).startswith('i-')
+
+    # 새로 만든 인스턴스는 아직 sshd가 뜨기 전일 수 있다.
+    - name: Read the host key the node presents now
+      ansible.builtin.command:
+        argv: [ssh-keyscan, -t, ed25519, -T, "10", "{{ node_ip }}"]
+      register: host_key_scan
+      retries: 30
+      delay: 10
+      until: >-
+        host_key_scan.rc == 0 and
+        (host_key_scan.stdout_lines | select('search', ' ssh-ed25519 ') | list | length) == 1
+      changed_when: false
+      check_mode: false
+
+    - name: Keep the scanned host key line
+      ansible.builtin.set_fact:
+        scanned_key_line: "{{ host_key_scan.stdout_lines | select('search', ' ssh-ed25519 ') | first }}"
+
+    - name: Compute the fingerprint of the scanned key
+      ansible.builtin.command:
+        argv: [ssh-keygen, -l, -f, "-"]
+        stdin: "{{ scanned_key_line }}"
+      register: scanned_fingerprint
+      changed_when: false
+      check_mode: false
+
+    - name: Look up the key this project trusted before
+      ansible.builtin.command:
+        argv: [ssh-keygen, -F, "{{ node_ip }}", -f, "{{ known_hosts_file }}"]
+      register: previously_trusted
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Decide whether the scanned key is already trusted
+      ansible.builtin.set_fact:
+        scanned_fingerprint_value: "{{ scanned_fingerprint.stdout.split()[1] }}"
+        key_already_trusted: "{{ scanned_key_line in previously_trusted.stdout_lines }}"
+
+    - name: Verify a new or changed host key against the EC2 boot log
+      when: not key_already_trusted
+      block:
+        # 막 부팅했으면 지문이 아직 부팅 로그에 반영되기 전일 수 있다(30초 안팎).
+        - name: Read the fingerprint cloud-init printed at first boot
+          ansible.builtin.command:
+            argv:
+              - aws
+              - ec2
+              - get-console-output
+              - --region
+              - "{{ aws_region }}"
+              - --instance-id
+              - "{{ instance_lookup.stdout | trim }}"
+              - --latest
+              - --output
+              - text
+              - --query
+              - Output
+          register: console_output
+          retries: 18
+          delay: 10
+          until: (console_output.stdout | default('') | regex_findall(boot_log_fingerprint_pattern) | length) > 0
+          changed_when: false
+          check_mode: false
+
+      rescue:
+        - name: Explain why the host key cannot be verified
+          ansible.builtin.fail:
+            msg: >-
+              {{ node_name }}({{ node_ip }})의 호스트 키를 검증할 수 없습니다. 이 프로젝트가
+              전에 신뢰한 키와 다르고, EC2 부팅 로그에도 지문이 없습니다. 노드가 부팅마다
+              지문을 남기는 스크립트는 이 playbook이 설치하므로, 설치하기 전에 중지 후
+              시작한 인스턴스이거나 부팅 로그에 아직 반영되지 않은 경우입니다. 몇 분 뒤
+              다시 실행하고, 그래도 안 되면 이미 검증한 팀원의
+              ansible/.generated/known_hosts를 믿을 수 있는 경로로 받아 넣으십시오.
+              현재 서버가 보낸 키 지문은 {{ scanned_fingerprint_value }} 입니다.
+
+    - name: Compare the scanned key with the EC2 boot log
+      ansible.builtin.assert:
+        that:
+          - >-
+            key_already_trusted or
+            (console_output.stdout | regex_findall(boot_log_fingerprint_pattern) | last)
+            == scanned_fingerprint_value
+        fail_msg: >-
+          {{ node_name }}({{ node_ip }})가 보낸 호스트 키가 EC2 부팅 로그와 다릅니다.
+          서버가 보낸 지문 {{ scanned_fingerprint_value }},
+          부팅 로그 지문 {{ console_output.stdout | default('') | regex_findall(boot_log_fingerprint_pattern) | last | default('없음') }}.
+          중간에서 다른 서버가 응답하고 있을 수 있으므로 접속하지 않습니다.
+        success_msg: >-
+          {{ node_name }}({{ node_ip }}) {{ scanned_fingerprint_value }}
+          ({{ 'known_hosts와 일치' if key_already_trusted else 'EC2 부팅 로그와 일치' }})
+
+- name: Write the verified known_hosts file
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    generated_dir: "{{ playbook_dir }}/../.generated"
+    known_hosts_file: "{{ generated_dir }}/known_hosts"
+
+  tasks:
+    - name: Create the local generated directory
+      ansible.builtin.file:
+        path: "{{ generated_dir }}"
+        state: directory
+        mode: "0700"
+
+    # 파일 전체를 다시 쓴다. 교체된 인스턴스의 옛 키가 남아 같은 주소에 서로 다른
+    # 키가 섞이는 일을 막는다.
+    # join('\n')은 YAML 블록 안에서 줄바꿈이 아니라 글자 그대로의 \n이 되어 키가
+    # 한 줄로 붙는다. 반복문으로 한 줄씩 쓴다.
+    - name: Write only the verified host keys
+      ansible.builtin.copy:
+        dest: "{{ known_hosts_file }}"
+        mode: "0600"
+        content: |
+          # playbooks/known-hosts.yml이 검증해 기록한다. 직접 고치지 않는다.
+          {% for host in groups['host_key_targets'] | sort %}
+          {{ hostvars[host].scanned_key_line }}
+          {% endfor %}
+
+    # 쓴 파일을 SSH 도구로 다시 읽어 검증한 지문이 노드마다 하나씩 들어갔는지 본다.
+    # 형식이 깨지면 SSH는 조용히 그 키를 무시하므로 접속 단계에서야 드러난다.
+    - name: Read the fingerprints back from the written file
+      ansible.builtin.command:
+        argv: [ssh-keygen, -l, -f, "{{ known_hosts_file }}"]
+      register: written_fingerprints
+      changed_when: false
+      check_mode: false
+
+    - name: Validate that every verified key was written correctly
+      ansible.builtin.assert:
+        that:
+          - written_fingerprints.stdout_lines | length == groups['host_key_targets'] | length
+          - >-
+            groups['host_key_targets']
+            | map('extract', hostvars, 'scanned_fingerprint_value')
+            | reject('in', written_fingerprints.stdout)
+            | list | length == 0
+        fail_msg: >-
+          {{ known_hosts_file }}에 기록된 키가 검증한 키와 맞지 않습니다:
+          {{ written_fingerprints.stdout_lines }}
+
+- name: Prepare SSH connections to the verified nodes
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    repo_root: "{{ playbook_dir }}/../.."
+    ssh_private_key_file: "{{ repo_root }}/../project1_key.pem"
+
+  tasks:
+    - name: Add the verified nodes to the in-memory inventory
+      ansible.builtin.add_host:
+        name: "{{ hostvars[item].node_name }}"
+        groups: host_key_nodes
+        ansible_host: "{{ hostvars[item].node_ip }}"
+        ansible_user: ubuntu
+        ansible_ssh_private_key_file: "{{ ssh_private_key_file }}"
+        ansible_python_interpreter: /usr/bin/python3
+        ansible_ssh_common_args: >-
+          -o UserKnownHostsFile={{ playbook_dir }}/../.generated/known_hosts
+          -o StrictHostKeyChecking=yes
+      loop: "{{ groups['host_key_targets'] | sort }}"
+      loop_control:
+        label: "{{ hostvars[item].node_name }}"
+
+# 방금 검증한 키로만 접속해 설치한다. 다음 중지·시작부터는 부팅 로그에 지문이
+# 남으므로 다른 컴퓨터에서 처음 배포해도 검증 기준이 생긴다.
+- name: Leave SSH host key fingerprints in the EC2 boot log on every boot
+  hosts: host_key_nodes
+  gather_facts: false
+  become: true
+
+  vars:
+    per_boot_script: /var/lib/cloud/scripts/per-boot/emoselfie-print-ssh-host-keys.sh
+
+  tasks:
+    - name: Wait until the node accepts SSH connections
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+
+    - name: Install the per-boot fingerprint script
+      ansible.builtin.copy:
+        src: ../files/print-ssh-host-keys.sh
+        dest: "{{ per_boot_script }}"
+        owner: root
+        group: root
+        mode: "0755"
+      register: per_boot_script_install
+
+    # 설치한 부팅에서는 cloud-init이 이미 per-boot 단계를 지나갔다. 다음 부팅을
+    # 기다리지 않고 한 번 남겨 둔다.
+    - name: Leave the fingerprints once right after installing
+      ansible.builtin.command:
+        argv: ["{{ per_boot_script }}"]
+      when: per_boot_script_install.changed
+      changed_when: true

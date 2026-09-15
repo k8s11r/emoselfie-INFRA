@@ -7,6 +7,10 @@
 #
 #   ansible-playbook playbooks/traefik.yml
 
+# 노드에 접속하기 전에 호스트 키부터 검증한다. 인스턴스를 교체해 키가 바뀌어도
+# 수작업 없이 이어서 실행되고, 검증되지 않은 키로는 접속하지 않는다.
+- ansible.builtin.import_playbook: known-hosts.yml
+
 - name: Build a server-node inventory from Terraform outputs
   hosts: localhost
   gather_facts: false
@@ -56,7 +60,7 @@
       check_mode: false
 
     # manifests 디렉터리와 그것을 읽는 addon 컨트롤러는 server 노드에만 있다.
-    # agent에 파일을 놓으면 아무 일도 일어나지 않는다.
+    # server가 여러 대면 모두에 같은 파일을 놓는다. 만들어지는 객체는 하나다.
     - name: Add the k3s server nodes to the in-memory inventory
       ansible.builtin.add_host:
         name: "{{ item.key }}"
@@ -65,6 +69,9 @@
         ansible_user: ubuntu
         ansible_ssh_private_key_file: "{{ ssh_private_key_file }}"
         ansible_python_interpreter: /usr/bin/python3
+        ansible_ssh_common_args: >-
+          -o UserKnownHostsFile={{ playbook_dir }}/../.generated/known_hosts
+          -o StrictHostKeyChecking=yes
         vpc_cidr: "{{ terraform_vpc_cidr.stdout | trim }}"
       loop: >-
         {{ (terraform_node_ips.stdout | from_json) | dict2items

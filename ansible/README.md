@@ -1,16 +1,16 @@
 # Ansible 운영 배포
 
-Terraform이 EC2 생성, 노드 패키지 설치, k3s server/agent 구성을 담당한다. 이
+Terraform이 EC2 생성, 노드 패키지 설치, k3s server 3대 구성을 담당한다. 이
 Ansible playbook은 **로컬 Mac에서** Terraform이 만든 클러스터로 애플리케이션을
 배포한다. EC2에 Ansible로 직접 로그인해 k3s를 다시 설치하지 않는다.
 
 한 번 실행하면 다음 순서로 동작한다.
 
-1. server 노드에 Traefik forwarded-header 설정을 놓고 반영을 기다림
-2. Terraform output에서 k3s server 공인 IP 확인
-3. server의 kubeconfig를 로컬 `.generated/`로 복사
-4. 세 노드가 모두 `Ready`인지 확인
-5. Longhorn 설치 또는 갱신
+1. 노드마다 SSH 호스트 키를 검증해 `.generated/known_hosts`에 기록
+2. server 노드에 Traefik forwarded-header 설정을 놓고 반영을 기다림
+3. Terraform output에서 k3s server 공인 IP 확인
+4. server의 kubeconfig를 로컬 `.generated/`로 복사
+5. 세 노드가 모두 `Ready`인지 확인
 6. namespace와 애플리케이션 Secret 생성 또는 갱신
 7. 새 ECR 로그인 토큰으로 image pull Secret 갱신
 8. BE/FE SHA 태그를 임시 Kustomize 오버레이에 주입
@@ -123,6 +123,67 @@ ansible-playbook playbooks/site.yml \
   -e frontend_tag=sha-bbbbbbbbbbbb
 ```
 
+## SSH 호스트 키 검증
+
+`playbooks/known-hosts.yml`이 담당한다. `traefik.yml`과 `users.yml`이 맨 앞에서
+가져오므로 `site.yml`을 포함한 모든 배포가 이 검증을 먼저 거친다. 단독 실행도 된다.
+
+```bash
+cd ansible
+ansible-playbook playbooks/known-hosts.yml
+```
+
+### 왜 필요한가
+
+인스턴스를 교체하면 EIP 덕분에 주소는 그대로인데 호스트 키는 새로 생긴다. SSH는
+같은 주소에 다른 키가 오면 중간자 공격일 수 있다며 접속을 거부한다. 검사를 끄면
+이 경고와 실제 공격을 구분할 수 없으므로 끄지 않고 검증을 자동화했다.
+
+### 신뢰 기준
+
+노드마다 `ssh-keyscan`으로 받은 키를 둘 중 하나와 대조한다.
+
+| 경우 | 대조 대상 |
+|---|---|
+| 이 프로젝트가 전에 신뢰한 키와 같다 (중지 후 시작) | `.generated/known_hosts` |
+| 그 밖의 경우 (인스턴스 교체·신규, 다른 컴퓨터에서 첫 배포) | EC2 부팅 로그에 남은 지문 |
+
+부팅 로그는 SSH를 거치지 않고 AWS API(`ec2:GetConsoleOutput`)로 가져오므로 중간에서
+바꿀 수 없다. 둘 다 맞지 않으면 **한 대라도 멈추고 파일을 쓰지 않는다.**
+
+통과한 키만으로 파일 전체를 다시 쓰고, 쓴 뒤 `ssh-keygen -l`로 다시 읽어 노드마다
+하나씩 들어갔는지 확인한다. 교체된 인스턴스의 옛 키는 남지 않는다.
+
+다른 playbook은 `UserKnownHostsFile=.generated/known_hosts`와
+`StrictHostKeyChecking=yes`로 접속한다. 사용자의 `~/.ssh/known_hosts`는 쓰지도
+고치지도 않는다.
+
+### 부팅할 때마다 지문을 남긴다
+
+cloud-init은 **인스턴스의 첫 부팅에만** 지문을 부팅 로그에 남긴다(`keys_to_console`이
+`PER_INSTANCE`). 그대로 두면 중지 후 시작한 인스턴스를 이 컴퓨터에서 한 번도 검증한 적이
+없을 때(다른 컴퓨터에서 처음 배포하는 경우 등) 대조할 기준이 없다.
+
+그래서 이 playbook은 검증을 마친 노드에
+`/var/lib/cloud/scripts/per-boot/emoselfie-print-ssh-host-keys.sh`를 설치한다
+(원본은 `ansible/files/print-ssh-host-keys.sh`). cloud-init의 `scripts_per_boot`가 매
+부팅 실행해 cloud-init과 같은 형식으로 지문을 `/dev/console`에 남기므로, 중지 후
+시작해도 부팅 로그로 검증할 수 있다. 콘솔에 쓴 내용이 부팅 로그 API에 보이기까지 30초
+안팎이 걸려 playbook이 기다렸다가 다시 조회한다.
+
+### 그래도 검증할 수 없는 경우
+
+- 인스턴스를 만든 뒤 이 playbook을 한 번도 돌리지 않은 채 중지 후 시작했다. 스크립트가
+  아직 없다
+- 부팅 직후라 부팅 로그에 아직 반영되지 않았다. 몇 분 뒤 다시 실행한다
+
+앞의 경우에는 이미 검증한 팀원의 `ansible/.generated/known_hosts`를 받아 같은 위치에
+넣는다. 서버의 공개키만 들어 있어 비밀은 아니지만, 바꿔치기되면 안 되므로 믿을 수 있는
+경로로 주고받는다.
+
+EC2 Instance Connect(브라우저 접속)와 Session Manager는 지금 구성으로는 쓸 수 없다.
+보안 그룹이 22번을 `admin_cidr`에서만 허용하고, 노드 IAM 역할에 SSM 권한이 없다.
+
 ## Traefik forwarded-header 설정
 
 `playbooks/traefik.yml`이 담당한다. `site.yml`이 맨 앞에서 가져오므로 배포할 때
@@ -193,7 +254,7 @@ KUBECONFIG=ansible/.generated/k3s-prod.yaml \
 
 ## 재배포
 
-새 이미지 SHA로 같은 명령을 다시 실행한다. Longhorn과 기존 리소스에는
+새 이미지 SHA로 같은 명령을 다시 실행한다. 기존 리소스에는
 `kubectl apply`가 사용되므로 필요한 차이만 반영한다. migrate Job은 Kubernetes에서
 spec 수정이 불가능해 매 배포마다 삭제하고 다시 만든다.
 
@@ -205,10 +266,11 @@ Ansible은 실행할 때마다 ECR 로그인 토큰도 새로 만든다. ECR 토
 
 `ansible/.generated/`에 다음 파일을 만든다.
 
+- 검증한 노드 SSH 호스트 키 (`known_hosts`)
 - 운영 관리자 kubeconfig
 - 실제 ECR SHA 태그가 들어간 임시 Kustomize 오버레이
 
-둘 다 Git에서 제외된다. kubeconfig는 클러스터 관리자 인증 정보이므로 외부에
+모두 Git에서 제외된다. kubeconfig는 클러스터 관리자 인증 정보이므로 외부에
 공유하지 않는다.
 
 ## 문제 확인

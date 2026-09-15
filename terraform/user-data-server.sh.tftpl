@@ -14,8 +14,29 @@ export INSTALL_K3S_CHANNEL='${k3s_channel}'
 export INSTALL_K3S_VERSION='${k3s_version}'
 %{ endif ~}
 
+%{ if join_server_url == "" ~}
+# 첫 server. --cluster-init으로 embedded etcd를 시작한다. 빼면 SQLite로 시작해
+# 나중에 server를 붙일 수 없다 (docs/k3s-node-topology.md).
+cluster_args=(--cluster-init)
+%{ else ~}
+# 나머지 server는 첫 server의 etcd에 합류한다. 첫 server가 아직 요청을 받지
+# 못하면 설치가 실패하므로 CA를 내줄 때까지 기다린다.
+until curl --silent --insecure --fail --max-time 5 '${join_server_url}/cacerts' >/dev/null; do
+  echo "첫 server 대기 중: ${join_server_url}"
+  sleep 10
+done
+
+# k3s 문서는 여러 server의 동시 합류를 다루지 않는다. etcd 멤버 추가가 겹치지
+# 않도록 한 대씩 간격을 둔다.
+sleep ${join_delay_seconds}
+cluster_args=(--server '${join_server_url}')
+%{ endif ~}
+
+# --tls-san은 모든 server에 같은 EIP를 넣는다. 평소에는 첫 server만 그 주소를
+# 쓰지만, 첫 server가 죽었을 때 EIP를 다른 server로 옮기면 인증서를 다시 만들지
+# 않고 kubectl을 계속 쓸 수 있다.
 curl --fail --silent --show-error --location https://get.k3s.io | \
   sh -s - server \
+    "$${cluster_args[@]}" \
     --write-kubeconfig-mode 644 \
     --tls-san '${server_public_ip}'
-

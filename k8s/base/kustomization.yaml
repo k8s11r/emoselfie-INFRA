@@ -6,7 +6,6 @@ resources:
   - redis.yaml
   - redis-sentinel.yaml
   - redis-media.yaml
-  - models-pvc.yaml
   - migrate-job.yaml
   - backend.yaml
   - web.yaml

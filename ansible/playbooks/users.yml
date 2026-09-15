@@ -1,4 +1,8 @@
 ---
+# 노드에 접속하기 전에 호스트 키부터 검증한다. 인스턴스를 교체해 키가 바뀌어도
+# 수작업 없이 이어서 실행되고, 검증되지 않은 키로는 접속하지 않는다.
+- ansible.builtin.import_playbook: known-hosts.yml
+
 - name: Build an inventory from Terraform outputs
   hosts: localhost
   gather_facts: false
@@ -43,6 +47,9 @@
         ansible_user: ubuntu
         ansible_ssh_private_key_file: "{{ ssh_private_key_file }}"
         ansible_python_interpreter: /usr/bin/python3
+        ansible_ssh_common_args: >-
+          -o UserKnownHostsFile={{ playbook_dir }}/../.generated/known_hosts
+          -o StrictHostKeyChecking=yes
       loop: "{{ (terraform_node_ips.stdout | from_json) | dict2items }}"
       loop_control:
         label: "{{ item.key }}"

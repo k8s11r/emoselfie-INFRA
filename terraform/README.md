@@ -3,7 +3,7 @@
 서울 리전의 기존 기본 VPC에 EC2 세 대를 만들고, 부팅 과정에서 k3s 클러스터를
 구성한다.
 
-- server 1대, agent 2대
+- server 3대. embedded etcd로 control plane을 셋으로 둔다
 - Ubuntu 24.04 amd64 최신 AMI
 - 기본 `t3.medium`, 노드별 암호화된 gp3 30 GiB
 - 기존 EC2 키페어 `project1_key` 사용
@@ -90,9 +90,14 @@ terraform output -raw kubeconfig_command
   확인한다.
 - server에는 Elastic IP를 붙여 중지 후 시작해도 주소가 유지된다. k3s가 부팅 때
   `--tls-san`으로 인증서에 주소를 박기 때문에, 주소가 바뀌면 kubectl이 TLS 검증에서
-  막히고 kubeconfig와 Ansible 인벤토리까지 함께 틀어진다. agent는 공인 IP로
-  통신하지 않으므로 고정하지 않았고, 중지 후 시작하면 주소가 바뀐다. 필요하면
-  Terraform 출력에서 확인한다.
+  막히고 kubeconfig와 Ansible 인벤토리까지 함께 틀어진다. 나머지 server 2대는 첫
+  server에 사설 IP로 합류하므로 고정하지 않았고, 중지 후 시작하면 주소가 바뀐다.
+  필요하면 Terraform 출력에서 확인한다.
+- EIP는 첫 server(`server-1`)에만 있다. 그 노드가 죽어도 나머지 server가 etcd
+  과반을 유지해 워크로드 재스케줄은 계속되지만, kubectl과 Ansible은 EIP로 접속하므로
+  막힌다. 모든 server의 인증서에 EIP가 들어 있어 EIP를 다른 server로 옮기면 바로
+  이어서 쓸 수 있다.
+- 3대 중 2대가 죽으면 etcd가 과반을 잃어 API가 쓰기를 받지 않는다.
 - ACM 인증서는 Terraform이 만들지 않고 `data`로 찾기만 한다. 도메인 소유 검증이
   필요해 콘솔에서 한 번 발급해 두는 편이 단순하다. **ALB와 같은 리전
   (`ap-northeast-2`)에 있어야 한다.** 다른 리전의 인증서는 찾지 못해 plan에서
@@ -118,10 +123,10 @@ ansible-playbook playbooks/site.yml --ask-vault-pass \
   -e backend_tag=sha-xxxxxxxxxxxx -e frontend_tag=sha-yyyyyyyyyyyy
 ```
 
-- 사설 IP는 유지되므로 agent가 server를 다시 찾아 클러스터는 스스로 복구된다.
+- 사설 IP는 유지되므로 server들이 서로를 다시 찾아 etcd와 클러스터가 스스로 복구된다.
 - server 공인 IP도 Elastic IP라 그대로다. 인증서를 다시 만들 필요가 없다.
 - ALB 타깃은 인스턴스 ID 기준이라 헬스체크를 통과하면 자동으로 복구된다.
-- Postgres와 Longhorn 데이터는 EBS에 남는다.
+- Postgres와 Redis 데이터(local-path)는 노드 EBS에 남는다.
 
 중지해도 ALB(월 약 $16), EBS(3대 30GiB 기준 월 약 $7), Elastic IP 요금은 계속
 나간다. 며칠 이상 쉰다면 `terraform destroy`가 저렴하다. 도메인·인증서·호스팅
