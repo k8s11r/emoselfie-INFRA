@@ -138,12 +138,30 @@ k3s 버전이나 설치 플래그를 하나 바꾸면 user_data가 바뀌고, �
 - k3s 버전은 `terraform/variables.tf`, Longhorn 버전은 `ansible/group_vars/all/main.yml`로 분리돼 있음
 - `k8s/base/redis.yaml:82`, `k8s/base/redis-sentinel.yaml:73`는 `storageClassName: local-path` 명시, `k8s/base/postgres.yaml`은 미지정
 - 실제 클러스터에서 `postgres-data-postgres-0`이 `longhorn`으로, `redis-data-*`/`sentinel-data-*`가 `local-path`로 바인딩된 것을 `kubectl get pvc`로 확인
+- 여러 default StorageClass가 있을 때 "가장 최근에 생성된 것이 이긴다"는 Kubernetes 동작 —
+  Kubernetes 공식 문서 두 곳에서 원문으로 확인함 (2026-09-15 기준):
+
+  > "If you set the `storageclass.kubernetes.io/is-default-class` annotation to true
+  > on more than one StorageClass in your cluster, and you then create a
+  > PersistentVolumeClaim with no `storageClassName` set, Kubernetes uses the most
+  > recently created default StorageClass."
+  > — [Storage Classes](https://kubernetes.io/docs/concepts/storage/storage-classes/)
+
+  > "If more than one StorageClass is marked as default, a PersistentVolumeClaim
+  > without an explicitly defined storageClassName will be created using the most
+  > recently created default StorageClass."
+  > — [Change the default StorageClass](https://kubernetes.io/docs/tasks/administer-cluster/change-default-storage-class/)
+
+  `Change the default StorageClass` 문서는 덧붙여 "클러스터엔 default로 마킹된
+  StorageClass가 하나만 있도록 하라"고 권고하면서, 여러 개를 **허용하는 이유는
+  마이그레이션 중 잠깐 겹치는 상황을 지원하기 위해서**라고 설명한다. 즉 지금 상황
+  (k3s와 Longhorn이 서로 몰라서 우연히 둘 다 default가 된 것)은 이 기능이 의도한
+  사용 사례가 아니라, 의도치 않게 그 허용 범위에 걸려버린 경우다.
 
 **문서 근거이며 직접 검증하지 않은 것**
 
 - HashiCorp 공식 문서의 "user_data는 초기화용, 설정관리 도구는 유지보수용" 권고
   ([Terraform Provisioners 문서](https://developer.hashicorp.com/terraform/language/provisioners))
-- 여러 default StorageClass가 있을 때 "가장 최근에 생성된 것이 이긴다"는 Kubernetes 동작
 
 **EC2에서 확인이 필요한 것**
 
