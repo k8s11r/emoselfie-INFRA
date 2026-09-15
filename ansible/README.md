@@ -10,12 +10,11 @@ Ansible playbook은 **로컬 Mac에서** Terraform이 만든 클러스터로 애
 2. Terraform output에서 k3s server 공인 IP 확인
 3. server의 kubeconfig를 로컬 `.generated/`로 복사
 4. 세 노드가 모두 `Ready`인지 확인
-5. Longhorn 설치 또는 갱신
-6. namespace와 애플리케이션 Secret 생성 또는 갱신
-7. 새 ECR 로그인 토큰으로 image pull Secret 갱신
-8. BE/FE SHA 태그를 임시 Kustomize 오버레이에 주입
-9. 이전 migrate Job 삭제 후 매니페스트 적용
-10. migration, backend, web 준비 완료까지 대기
+5. namespace와 애플리케이션 Secret 생성 또는 갱신
+6. 새 ECR 로그인 토큰으로 image pull Secret 갱신
+7. BE/FE SHA 태그를 임시 Kustomize 오버레이에 주입
+8. 이전 migrate Job 삭제 후 매니페스트 적용
+9. migration, backend, web 준비 완료까지 대기
 
 ## 1. Ansible 설치
 
@@ -193,7 +192,7 @@ KUBECONFIG=ansible/.generated/k3s-prod.yaml \
 
 ## 재배포
 
-새 이미지 SHA로 같은 명령을 다시 실행한다. Longhorn과 기존 리소스에는
+새 이미지 SHA로 같은 명령을 다시 실행한다. 기존 리소스에는
 `kubectl apply`가 사용되므로 필요한 차이만 반영한다. migrate Job은 Kubernetes에서
 spec 수정이 불가능해 매 배포마다 삭제하고 다시 만든다.
 

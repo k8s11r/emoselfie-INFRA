@@ -121,7 +121,7 @@ ansible-playbook playbooks/site.yml --ask-vault-pass \
 - 사설 IP는 유지되므로 agent가 server를 다시 찾아 클러스터는 스스로 복구된다.
 - server 공인 IP도 Elastic IP라 그대로다. 인증서를 다시 만들 필요가 없다.
 - ALB 타깃은 인스턴스 ID 기준이라 헬스체크를 통과하면 자동으로 복구된다.
-- Postgres와 Longhorn 데이터는 EBS에 남는다.
+- Postgres와 Redis 데이터(local-path)는 노드 EBS에 남는다.
 
 중지해도 ALB(월 약 $16), EBS(3대 30GiB 기준 월 약 $7), Elastic IP 요금은 계속
 나간다. 며칠 이상 쉰다면 `terraform destroy`가 저렴하다. 도메인·인증서·호스팅
