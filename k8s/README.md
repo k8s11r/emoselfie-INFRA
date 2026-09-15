@@ -92,10 +92,10 @@ kubectl apply -k k8s/overlays/local     # 조립 + 적용
 base를 끌어오는 방식이 그것이다.
 
 ```yaml
-# overlays/local/kustomization.yaml
+# overlays/https-check/kustomization.yaml
 resources:
-  - ../../base        # base의 조립 결과를 통째로 가져오고
-  - models-pv.yaml    # 로컬에만 필요한 것을 더한다
+  - ../local          # local 오버레이의 조립 결과를 통째로 가져오고
+  - namespace.yaml    # 이 오버레이에만 필요한 것을 더한다
 ```
 
 **오버레이는 base를 복사하지 않고 차이만 얹는다.** `namespace`(네임스페이스 박기),
