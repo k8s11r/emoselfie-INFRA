@@ -4,6 +4,10 @@
 # (이슈 #11).
 - ansible.builtin.import_playbook: traefik.yml
 
+# 기본 StorageClass 정리도 server 노드에서 해야 하는 일이라 따로 둔다. 앱을
+# 적용하기 전에 끝나야 postgres PVC가 어느 클래스에 붙을지 흔들리지 않는다.
+- ansible.builtin.import_playbook: storage.yml
+
 - name: Deploy Emoselfie to the Terraform-managed k3s cluster
   hosts: localhost
   gather_facts: false
@@ -229,6 +233,37 @@
           - --all
           - --timeout=10m
       changed_when: false
+
+    # Longhorn은 매니페스트의 ConfigMap으로 자기 StorageClass를 기본값으로
+    # 만든다. longhorn-manager가 비동기로 만들므로 pod가 Ready여도 아직 없을 수 있다.
+    - name: Read which StorageClasses are marked as the default
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ kubeconfig_path }}"
+          - get
+          - storageclass
+          - -o
+          - 'jsonpath={range .items[*]}{.metadata.name}={.metadata.annotations.storageclass\.kubernetes\.io/is-default-class}{"\n"}{end}'
+      register: storage_class_defaults
+      retries: 60
+      delay: 5
+      until: "'longhorn=true' in storage_class_defaults.stdout_lines"
+      changed_when: false
+
+    # storageClassName이 없는 PVC(postgres)가 이 뒤에 만들어진다. 기본값이 둘이면
+    # 설치 순서에 따라 붙는 곳이 달라지므로 여기서 멈춘다.
+    - name: Validate that Longhorn is the only default StorageClass
+      ansible.builtin.assert:
+        that:
+          - >-
+            (storage_class_defaults.stdout_lines
+             | select('match', '.*=true$') | list) == ['longhorn=true']
+        fail_msg: >-
+          기본 StorageClass는 longhorn 하나여야 합니다. 현재:
+          {{ storage_class_defaults.stdout_lines | select('match', '.*=true$') | list }}
+          playbooks/storage.yml이 실행됐는지 확인하십시오.
 
     - name: Create the application namespace
       ansible.builtin.command:

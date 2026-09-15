@@ -7,15 +7,17 @@ Ansible playbook은 **로컬 Mac에서** Terraform이 만든 클러스터로 애
 한 번 실행하면 다음 순서로 동작한다.
 
 1. server 노드에 Traefik forwarded-header 설정을 놓고 반영을 기다림
-2. Terraform output에서 k3s server 공인 IP 확인
-3. server의 kubeconfig를 로컬 `.generated/`로 복사
-4. 세 노드가 모두 `Ready`인지 확인
-5. Longhorn 설치 또는 갱신
-6. namespace와 애플리케이션 Secret 생성 또는 갱신
-7. 새 ECR 로그인 토큰으로 image pull Secret 갱신
-8. BE/FE SHA 태그를 임시 Kustomize 오버레이에 주입
-9. 이전 migrate Job 삭제 후 매니페스트 적용
-10. migration, backend, web 준비 완료까지 대기
+2. server 노드에서 local-path의 기본 StorageClass 표시를 떼고 k3s가 되살리지 못하게 막음
+3. Terraform output에서 k3s server 공인 IP 확인
+4. server의 kubeconfig를 로컬 `.generated/`로 복사
+5. 세 노드가 모두 `Ready`인지 확인
+6. Longhorn 설치 또는 갱신
+7. Longhorn이 유일한 기본 StorageClass인지 확인
+8. namespace와 애플리케이션 Secret 생성 또는 갱신
+9. 새 ECR 로그인 토큰으로 image pull Secret 갱신
+10. BE/FE SHA 태그를 임시 Kustomize 오버레이에 주입
+11. 이전 migrate Job 삭제 후 매니페스트 적용
+12. migration, backend, web 준비 완료까지 대기
 
 ## 1. Ansible 설치
 
@@ -190,6 +192,55 @@ KUBECONFIG=ansible/.generated/k3s-prod.yaml \
 
 브라우저에서 방 만들기(`POST /api/rooms`)와 websocket 연결까지 확인한다. `curl`은
 `Origin` 헤더를 보내지 않아 검사가 건너뛰어지므로 재현되지 않는다.
+
+## 기본 StorageClass
+
+`playbooks/storage.yml`이 담당하고 `site.yml`이 Traefik 다음에 가져온다. 단독 실행도
+된다.
+
+```bash
+cd ansible
+ansible-playbook playbooks/storage.yml
+```
+
+### 왜 필요한가
+
+k3s는 `local-path`를 기본값으로 설치하고, Longhorn 매니페스트도 `longhorn`을
+기본값으로 만든다. 둘 다 기본값이면 쿠버네티스는 **가장 최근에 만든 쪽**을 고른다.
+`storageClassName`이 없는 PVC가 어디에 붙을지가 설치 순서라는 우연에 달린다.
+지금 그런 PVC는 postgres의 `postgres-data`다.
+
+### 무엇을 하는가
+
+server 노드에서 두 가지를 한다.
+
+1. `/var/lib/rancher/k3s/server/manifests/local-storage.yaml.skip`을 놓는다
+2. `local-path`의 `storageclass.kubernetes.io/is-default-class`를 `false`로 바꾼다
+
+2만 하면 k3s가 재시작할 때 packaged manifest를 다시 적용해 기본값을 되살린다.
+`.skip`은 **이미 만들어진 리소스는 그대로 두고 이후 적용만 막는다.** 반대로
+`--disable local-storage`는 리소스까지 지운다. redis와 redis-sentinel이
+`storageClassName: local-path`로 명시해 쓰고 있으므로 지우면 안 된다.
+
+새로 만든 클러스터에서는 k3s가 local-path를 만들기 전에 `.skip`을 놓으면 local-path가
+아예 생기지 않는다. 그래서 StorageClass가 생길 때까지 기다린 뒤에 놓는다.
+
+`site.yml`은 Longhorn 설치 뒤, 앱을 적용하기 **전에** 기본값이 `longhorn` 하나뿐인지
+확인하고 아니면 멈춘다.
+
+### 대가
+
+`.skip`이 있는 동안 k3s를 업그레이드해도 local-path-provisioner는 갱신되지 않는다.
+업그레이드와 함께 갱신하려면 `.skip`을 지우고 k3s를 재시작한 뒤 이 playbook을 다시
+돌린다.
+
+### 확인
+
+```bash
+KUBECONFIG=ansible/.generated/k3s-prod.yaml kubectl get storageclass
+```
+
+`(default)`가 `longhorn`에만 붙어 있어야 한다.
 
 ## 재배포
 

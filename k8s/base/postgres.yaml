@@ -1,11 +1,14 @@
 # 단일 인스턴스다. HA가 아니다.
 #
-# k3s 기본 스토리지가 local-path라 PVC가 특정 노드 디스크에 묶인다. 그 노드가
-# 죽으면 pod가 다른 노드로 재스케줄되지 못하고 Pending에 갇힌다. 즉 3노드
-# 구성에서 여기만 단일 장애점으로 남는다.
+# PVC에 storageClassName을 적지 않아 클러스터의 기본 StorageClass를 따른다.
+# 운영에서는 Ansible이 Longhorn을 유일한 기본값으로 둔다
+# (ansible/playbooks/storage.yml). 기본값이 local-path라면 PVC가 특정 노드
+# 디스크에 묶여, 그 노드가 죽을 때 pod가 다른 노드로 옮겨가지 못하고 Pending에
+# 갇힌다.
 #
-# 진짜 HA가 필요해지면 CloudNativePG 오퍼레이터로 교체한다. 공유 스토리지 없이
-# 스트리밍 복제 + 자동 failover를 하므로 local-path 위에서도 동작한다.
+# 어느 쪽이든 postgres 프로세스는 하나라 단일 장애점이다. 진짜 HA가 필요해지면
+# CloudNativePG 오퍼레이터로 교체한다. 공유 스토리지 없이 스트리밍 복제 + 자동
+# failover를 하므로 local-path 위에서도 동작한다.
 #
 # replicas가 1인데 왜 StatefulSet인가:
 #   Deployment의 기본 전략은 RollingUpdate라 새 pod를 먼저 띄우고 준비되면 옛
