@@ -19,6 +19,8 @@
     terraform_dir: "{{ repo_root }}/terraform"
     generated_dir: "{{ playbook_dir }}/../.generated"
     kubeconfig_path: "{{ generated_dir }}/k3s-prod.yaml"
+    # traefik.yml이 가져오는 known-hosts.yml이 검증해 둔 호스트 키
+    known_hosts_file: "{{ generated_dir }}/known_hosts"
     ssh_private_key_file: "{{ repo_root }}/../project1_key.pem"
     ecr_registry: "{{ aws_account_id }}.dkr.ecr.{{ aws_region }}.amazonaws.com"
     postgres_user: emoselfie
@@ -135,7 +137,9 @@
           - -i
           - "{{ ssh_private_key_file }}"
           - -o
-          - StrictHostKeyChecking=accept-new
+          - "UserKnownHostsFile={{ known_hosts_file }}"
+          - -o
+          - StrictHostKeyChecking=yes
           - "ubuntu@{{ server_public_ip }}:/etc/rancher/k3s/k3s.yaml"
           - "{{ kubeconfig_path }}"
       register: kubeconfig_copy
