@@ -48,3 +48,11 @@ secretGenerator:
       - COOKIE_SECRET=local-development-cookie-secret-do-not-use-in-production-0
       - CAPTURE_TOKEN_SECRET=local-development-capture-secret-do-not-use-in-production
       - MEDIA_TOKEN_SECRET=local-development-media-secret-do-not-use-in-production-0
+
+patches:
+  # 로컬은 HTTP라 라우팅 쿠키의 Secure를 내린다. ALLOW_INSECURE_COOKIE=true와 짝이다.
+  - target: {kind: Service, name: backend}
+    patch: |
+      - op: replace
+        path: /metadata/annotations/traefik.ingress.kubernetes.io~1service.sticky.cookie.secure
+        value: "false"

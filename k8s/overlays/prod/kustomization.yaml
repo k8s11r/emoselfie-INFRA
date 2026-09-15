@@ -33,11 +33,3 @@ configMapGenerator:
 # Secret은 저장소에 두지 않는다. 배포 전에 클러스터에 직접 만든다.
 #   kubectl create secret generic emoselfie-secrets -n emoselfie \
 #     --from-literal=POSTGRES_USER=... --from-literal=DATABASE_URL=... ...
-
-patches:
-  # 운영의 라우팅 쿠키도 HTTPS에서만 전송한다.
-  - target: {kind: Service, name: backend}
-    patch: |
-      - op: replace
-        path: /metadata/annotations/traefik.ingress.kubernetes.io~1service.sticky.cookie.secure
-        value: "true"
