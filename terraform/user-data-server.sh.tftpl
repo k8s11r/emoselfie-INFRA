@@ -8,13 +8,6 @@ apt-get update
 apt-get install -y --no-install-recommends ca-certificates curl open-iscsi nfs-common
 systemctl enable --now iscsid
 
-metadata_token="$(curl --fail --silent --show-error --request PUT \
-  --header 'X-aws-ec2-metadata-token-ttl-seconds: 300' \
-  http://169.254.169.254/latest/api/token)"
-public_ip="$(curl --fail --silent --show-error \
-  --header "X-aws-ec2-metadata-token: $${metadata_token}" \
-  http://169.254.169.254/latest/meta-data/public-ipv4)"
-
 export K3S_TOKEN='${cluster_token}'
 export INSTALL_K3S_CHANNEL='${k3s_channel}'
 %{ if k3s_version != "" ~}
@@ -24,5 +17,5 @@ export INSTALL_K3S_VERSION='${k3s_version}'
 curl --fail --silent --show-error --location https://get.k3s.io | \
   sh -s - server \
     --write-kubeconfig-mode 644 \
-    --tls-san "$${public_ip}"
+    --tls-san '${server_public_ip}'
 
