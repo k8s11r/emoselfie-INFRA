@@ -6,15 +6,16 @@ Ansible playbook은 **로컬 Mac에서** Terraform이 만든 클러스터로 애
 
 한 번 실행하면 다음 순서로 동작한다.
 
-1. server 노드에 Traefik forwarded-header 설정을 놓고 반영을 기다림
-2. Terraform output에서 k3s server 공인 IP 확인
-3. server의 kubeconfig를 로컬 `.generated/`로 복사
-4. 세 노드가 모두 `Ready`인지 확인
-5. namespace와 애플리케이션 Secret 생성 또는 갱신
-6. 새 ECR 로그인 토큰으로 image pull Secret 갱신
-7. BE/FE SHA 태그를 임시 Kustomize 오버레이에 주입
-8. 이전 migrate Job 삭제 후 매니페스트 적용
-9. migration, backend, web 준비 완료까지 대기
+1. 노드마다 SSH 호스트 키를 검증해 `.generated/known_hosts`에 기록
+2. server 노드에 Traefik forwarded-header 설정을 놓고 반영을 기다림
+3. Terraform output에서 k3s server 공인 IP 확인
+4. server의 kubeconfig를 로컬 `.generated/`로 복사
+5. 세 노드가 모두 `Ready`인지 확인
+6. namespace와 애플리케이션 Secret 생성 또는 갱신
+7. 새 ECR 로그인 토큰으로 image pull Secret 갱신
+8. BE/FE SHA 태그를 임시 Kustomize 오버레이에 주입
+9. 이전 migrate Job 삭제 후 매니페스트 적용
+10. migration, backend, web 준비 완료까지 대기
 
 ## 1. Ansible 설치
 
@@ -122,6 +123,52 @@ ansible-playbook playbooks/site.yml \
   -e frontend_tag=sha-bbbbbbbbbbbb
 ```
 
+## SSH 호스트 키 검증
+
+`playbooks/known-hosts.yml`이 담당한다. `traefik.yml`과 `users.yml`이 맨 앞에서
+가져오므로 `site.yml`을 포함한 모든 배포가 이 검증을 먼저 거친다. 단독 실행도 된다.
+
+```bash
+cd ansible
+ansible-playbook playbooks/known-hosts.yml
+```
+
+### 왜 필요한가
+
+인스턴스를 교체하면 EIP 덕분에 주소는 그대로인데 호스트 키는 새로 생긴다. SSH는
+같은 주소에 다른 키가 오면 중간자 공격일 수 있다며 접속을 거부한다. 검사를 끄면
+이 경고와 실제 공격을 구분할 수 없으므로 끄지 않고 검증을 자동화했다.
+
+### 신뢰 기준
+
+노드마다 `ssh-keyscan`으로 받은 키를 둘 중 하나와 대조한다.
+
+| 경우 | 대조 대상 |
+|---|---|
+| 이 프로젝트가 전에 신뢰한 키와 같다 (중지 후 시작) | `.generated/known_hosts` |
+| 새 키다 (인스턴스 교체·신규) | EC2 부팅 로그에 cloud-init이 남긴 지문 |
+
+부팅 로그는 SSH를 거치지 않고 AWS API(`ec2:GetConsoleOutput`)로 가져오므로 중간에서
+바꿀 수 없다. 둘 다 맞지 않으면 **한 대라도 멈추고 파일을 쓰지 않는다.**
+
+통과한 키만으로 파일 전체를 다시 쓰고, 쓴 뒤 `ssh-keygen -l`로 다시 읽어 노드마다
+하나씩 들어갔는지 확인한다. 교체된 인스턴스의 옛 키는 남지 않는다.
+
+다른 playbook은 `UserKnownHostsFile=.generated/known_hosts`와
+`StrictHostKeyChecking=yes`로 접속한다. 사용자의 `~/.ssh/known_hosts`는 쓰지도
+고치지도 않는다.
+
+### 검증할 수 없는 경우
+
+cloud-init은 **인스턴스의 첫 부팅에만** 지문을 남긴다. 그래서 중지 후 시작한 인스턴스를
+이 컴퓨터에서 한 번도 검증한 적이 없으면(다른 컴퓨터에서 처음 배포하는 경우 등) 대조할
+기준이 없어 멈춘다. 이때는 EC2 Instance Connect나 Session Manager처럼 SSH 호스트 키와
+무관한 경로로 서버에 들어가 확인한 지문을 넣는다.
+
+```bash
+sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+```
+
 ## Traefik forwarded-header 설정
 
 `playbooks/traefik.yml`이 담당한다. `site.yml`이 맨 앞에서 가져오므로 배포할 때
@@ -204,10 +251,11 @@ Ansible은 실행할 때마다 ECR 로그인 토큰도 새로 만든다. ECR 토
 
 `ansible/.generated/`에 다음 파일을 만든다.
 
+- 검증한 노드 SSH 호스트 키 (`known_hosts`)
 - 운영 관리자 kubeconfig
 - 실제 ECR SHA 태그가 들어간 임시 Kustomize 오버레이
 
-둘 다 Git에서 제외된다. kubeconfig는 클러스터 관리자 인증 정보이므로 외부에
+모두 Git에서 제외된다. kubeconfig는 클러스터 관리자 인증 정보이므로 외부에
 공유하지 않는다.
 
 ## 문제 확인
