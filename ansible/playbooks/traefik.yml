@@ -35,6 +35,11 @@
           Terraform 인스턴스에 접속할 project1_key.pem을 찾을 수 없습니다:
           {{ ssh_private_key_file }}
 
+    # site.yml이 이 playbook을 먼저 가져오므로 여기 한 번만 두면 배포 전에 항상
+    # 확인된다. 단독 실행도 클러스터를 바꾸므로 같은 확인을 거친다.
+    - name: Check that the local tree matches origin/main
+      ansible.builtin.include_tasks: tasks/git-main-check.yml
+
     - name: Read all node public IPs from Terraform
       ansible.builtin.command:
         argv:

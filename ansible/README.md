@@ -6,16 +6,17 @@ Ansible playbook은 **로컬 Mac에서** Terraform이 만든 클러스터로 애
 
 한 번 실행하면 다음 순서로 동작한다.
 
-1. 노드마다 SSH 호스트 키를 검증해 `.generated/known_hosts`에 기록
-2. server 노드에 Traefik forwarded-header 설정을 놓고 반영을 기다림
-3. Terraform output에서 k3s server 공인 IP 확인
-4. server의 kubeconfig를 로컬 `.generated/`로 복사
-5. 세 노드가 모두 `Ready`인지 확인
-6. namespace와 애플리케이션 Secret 생성 또는 갱신
-7. 새 ECR 로그인 토큰으로 image pull Secret 갱신
-8. BE/FE SHA 태그를 임시 Kustomize 오버레이에 주입
-9. 이전 migrate Job 삭제 후 매니페스트 적용
-10. migration, backend, web 준비 완료까지 대기
+1. 로컬 작업 트리가 `origin/main`과 같은지 확인, 다르면 경고 후 yes/no
+2. 노드마다 SSH 호스트 키를 검증해 `.generated/known_hosts`에 기록
+3. server 노드에 Traefik forwarded-header 설정을 놓고 반영을 기다림
+4. Terraform output에서 k3s server 공인 IP 확인
+5. server의 kubeconfig를 로컬 `.generated/`로 복사
+6. 세 노드가 모두 `Ready`인지 확인
+7. namespace와 애플리케이션 Secret 생성 또는 갱신
+8. 새 ECR 로그인 토큰으로 image pull Secret 갱신
+9. BE/FE SHA 태그를 임시 Kustomize 오버레이에 주입
+10. 이전 migrate Job 삭제 후 매니페스트 적용
+11. migration, backend, web 준비 완료까지 대기
 
 ## 1. Ansible 설치
 
@@ -24,7 +25,7 @@ brew install ansible
 ansible-playbook --version
 ```
 
-로컬에 `terraform`, `kubectl`, `aws`, `scp`도 있어야 한다.
+로컬에 `terraform`, `kubectl`, `aws`, `scp`, `git`도 있어야 한다.
 
 ## 2. Secret Vault 만들기
 
@@ -119,6 +120,28 @@ ansible-playbook playbooks/site.yml \
 ansible-playbook playbooks/site.yml \
   --ask-vault-pass \
   -e ssh_private_key_file=/다른/경로/project1_key.pem \
+  -e backend_tag=sha-aaaaaaaaaaaa \
+  -e frontend_tag=sha-bbbbbbbbbbbb
+```
+
+### 배포 전 Git 상태 확인
+
+playbook은 Git에서 아무것도 받지 않고 **실행하는 사람의 로컬 작업 트리**를 그대로
+배포한다. 그래서 `traefik.yml`(그리고 이를 먼저 가져오는 `site.yml`)은 노드에 손대기 전에
+`git fetch origin main` 후 다음을 확인한다.
+
+- `HEAD`가 `origin/main`과 같은 커밋인가
+- 미커밋·미추적 변경이 없는가
+
+둘 다 맞으면 아무것도 묻지 않는다. 하나라도 다르면 두 커밋과 변경 파일 목록을
+보여 주고 `그래도 계속할까요? (yes/no)`를 묻는다. `yes`만 계속하고, 그 외 입력이나
+Enter는 중단한다. 터미널이 아닌 곳(CI 등)에서는 입력을 받을 수 없어 바로 중단되므로,
+의도한 상태라면 `-e skip_git_check=true`로 건너뛴다.
+
+```bash
+ansible-playbook playbooks/site.yml \
+  --ask-vault-pass \
+  -e skip_git_check=true \
   -e backend_tag=sha-aaaaaaaaaaaa \
   -e frontend_tag=sha-bbbbbbbbbbbb
 ```
