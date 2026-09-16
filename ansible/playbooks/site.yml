@@ -100,6 +100,7 @@
         - kubectl
         - aws
         - scp
+        - git
       changed_when: false
 
     - name: Read the k3s server public IP from Terraform
