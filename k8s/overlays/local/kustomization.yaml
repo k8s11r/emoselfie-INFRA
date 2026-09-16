@@ -35,6 +35,14 @@ configMapGenerator:
       - APP_ENV=development
       - ALLOW_INSECURE_COOKIE=true
       - INFERENCE_BACKEND=real
+      # 기본 60초. loadtest/(업로드 직격 부하 테스트)가 만드는 참가자는 Socket.IO에
+      # 붙지 않아 grace 내내 "접속 안 한 참가자"로 보이고, 60초가 지나면
+      # app/domain/round/runner.py가 status=left로 치워 방을 finished로 닫아버린다.
+      # 그러면 이후 제출이 전부 403 NOT_A_PARTICIPANT가 된다(loadtest/README.md).
+      # 값을 크게 잡아 로컬 테스트 동안은 이 정리가 사실상 발동하지 않게 한다.
+      # prod overlay에도 같은 값이 있다 — 부하 테스트 창구에서만 켜고, 끝나면
+      # 지워서 60초로 되돌릴 것 (실제 플레이의 이탈 판정이 늦어지면 안 되므로).
+      - PARTICIPANT_GRACE_SEC=86400
 
 # 로컬 전용 값이다. 운영에서는 클러스터에 직접 만든 Secret을 쓴다.
 # compose.yaml의 기본값과 동일하다.
