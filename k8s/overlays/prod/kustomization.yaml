@@ -18,10 +18,6 @@ images:
   - name: emoselfie-web
     newTag: v1
 
-replicas:
-  - name: backend
-    count: 2
-
 configMapGenerator:
   - name: backend-env
     behavior: merge
