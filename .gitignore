@@ -12,3 +12,8 @@ ansible/group_vars/all/vault.yml
 # 로컬 실행 편의 스크립트. 저장소로 공유하지 않는다.
 run_local.sh
 .https-check/
+
+# 부하 테스트 산출물. pool.csv에는 서명된 쿠키/캡처 토큰이 들어 있다.
+loadtest/pool.csv
+loadtest/results/
+loadtest/__pycache__/
