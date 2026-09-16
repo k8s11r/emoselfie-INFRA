@@ -22,11 +22,9 @@ images:
   - name: emoselfie-web
     newTag: local
 
-# 노드를 --servers-memory 4g 로 t3.medium과 같게 맞췄으므로 3개를 그대로 올려
-# EC2에서 스케줄이 되는지 미리 확인한다. 노드당 2Gi backend 하나씩 들어간다.
-replicas:
-  - name: backend
-    count: 3
+# backend의 replica 수는 base의 HPA(1~3개, cpu 70%)가 관리한다. 노드를
+# --servers-memory 4g로 t3.medium과 같게 맞춘 건 그대로다: 부하가 몰려 3개까지
+# 늘어나도 3노드에 스케줄되는지 그때 확인된다.
 
 configMapGenerator:
   - name: backend-env

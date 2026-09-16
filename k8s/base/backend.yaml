@@ -3,7 +3,9 @@ kind: Deployment
 metadata:
   name: backend
 spec:
-  replicas: 1
+  # replicas를 여기서 명시하지 않는다 — 아래 HPA(minReplicas 1)가 관리한다.
+  # kustomize가 빌드 시 채워 넣는 기본값(1)도 마침 minReplicas와 같아서
+  # apply할 때마다 그 값으로 되돌아가는 flapping이 없다.
   selector:
     matchLabels:
       app: backend
@@ -14,12 +16,20 @@ spec:
     spec:
       # 노드 하나가 죽어도 서비스가 유지되게 replica를 흩뿌린다.
       # podAntiAffinity(preferred)는 "선호"일 뿐 분배를 보장 못 해 이걸로 바꿨다.
-      # maxSkew 1이 노드당 pod 수 편차를 강제하고, ScheduleAnyway라 노드가
-      # 부족해져도(장애 등) Pending에 갇히지 않고 스케줄은 계속된다.
+      #
+      # DoNotSchedule로 강제한다: ScheduleAnyway(소프트)일 때 노드 3개가 멀쩡한데도
+      # 2:1:0처럼 치우친 배치가 실제로 관측됐다(HPA 부하 테스트 중). DoNotSchedule은
+      # 그런 배치를 거부해 노드가 다 살아있으면 1:1:1로 강제한다.
+      #
+      # 노드가 죽었을 때 Pending에 갇히는 걸 걱정할 필요는 없다 — k8s가 NotReady
+      # 노드에 자동으로 taint를 붙이고, nodeTaintsPolicy 기본값(Honor, 1.26+)이
+      # taint 붙은 노드를 skew 계산 대상에서 아예 뺀다. 그래서 노드 하나가 죽으면
+      # 남은 노드들만 놓고 균형을 맞추므로(예: 2노드 남았으면 skew 1까지 2:1 허용),
+      # DoNotSchedule이어도 장애 시 스케줄이 막히지 않는다.
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
-          whenUnsatisfiable: ScheduleAnyway
+          whenUnsatisfiable: DoNotSchedule
           labelSelector:
             matchLabels:
               app: backend
@@ -144,3 +154,32 @@ spec:
   ports:
     - port: 8000
       targetPort: 8000
+
+---
+
+# cpu request(위, "1")의 70% 기준. 부하 테스트(loadtest/)에서 한 pod가
+# request/limit의 99%까지 찍힌 걸 실측해서 고른 값이다. 실습용이라 local/prod
+# 구분 없이 minReplicas 1로 통일한다 — 평소 1개로 두다가 부하가 몰리면 어차피
+# 스케일업되므로 당장 바닥을 올려둘 이유가 없다. 노드 3대(EC2: server 1 +
+# agent 2, 로컬 k3d도 동일하게 3대) 기준으로 maxReplicas 3.
+#
+# 새 pod가 Ready 되는 데는 모델 로드+warmup 때문에 startupProbe 여유(최대
+# 120초)가 걸린다. 스케일업이 트래픽에 반영되기까지 그만큼 지연이 정상이다.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
