@@ -17,3 +17,12 @@ spec:
           trustedIPs:
             - 10.42.0.0/16    # k3s Pod CIDR (svclb 중계)
             - 172.16.0.0/12   # k3d docker 네트워크 (edge 컨테이너)
+    deployment:
+      replicas: 3           # server 3대 (up() 의 k3d --servers 3)
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: traefik

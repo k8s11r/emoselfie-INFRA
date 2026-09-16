@@ -20,3 +20,14 @@ spec:
 {% for trusted_ip in traefik_trusted_ips %}
             - "{{ trusted_ip }}"
 {% endfor %}
+    # server 노드 한 대가 죽어도 입구가 남도록 노드 수만큼 replica를 두고
+    # 노드당 1개로 강제한다. replicas만 늘리면 스케줄러가 몰아넣을 수 있다.
+    deployment:
+      replicas: {{ groups['k3s_servers'] | length }}
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: traefik
