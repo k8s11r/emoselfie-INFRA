@@ -50,12 +50,23 @@ export PATH="$HOME/.venvs/emoselfie-loadtest/bin:$PATH"   # 이 셸에서 locust
 
 loadtest/run.sh 100 300              # 로컬(k3d), namespace=local, http://localhost
 loadtest/run.sh 100 300 prod         # 운영(EC2), namespace=emoselfie, https://emoselfie.click/
-KUBECONFIG=./k3s.yaml loadtest/run.sh 100 300 prod https://other.example.com  # host만 override
 ```
 
 인자: `<동시 사용자 수> <지속 시간(초)> [local|prod] [대상 호스트]` — 3번째 인자가
-`local`(기본)이냐 `prod`냐로 네임스페이스와 host 기본값이 같이 바뀐다. host를
-따로 주면(4번째 인자) 그 값이 우선한다. 내부적으로:
+`local`(기본)이냐 `prod`냐로 네임스페이스·host 기본값에 더해 **어느 클러스터에
+붙을지까지** 같이 정해진다:
+
+- `local`: k3d의 고정 위치·컨텍스트(`~/.kube/config`, `k3d-mycluster`)로 항상
+  붙는다 — 지금 쉘의 `KUBECONFIG`가 뭘 가리키든 무시하고 로컬로 간다
+- `prod`: `LOADTEST_PROD_KUBECONFIG`/`LOADTEST_PROD_CONTEXT` 환경변수가 있으면
+  그걸 쓰고, 없으면 지금 쉘에 이미 설정된 `KUBECONFIG`/컨텍스트를 그대로 쓴다
+
+```bash
+LOADTEST_PROD_KUBECONFIG=~/k3s_prod.yaml LOADTEST_PROD_CONTEXT=default \
+  loadtest/run.sh 100 300 prod https://other.example.com   # host만 override
+```
+
+host를 따로 주면(4번째 인자) 그 값이 우선한다. 내부적으로:
 
 1. **시딩** — `seed.py`를 k8s Job으로 클러스터 안에서 실행(`emoselfie-backend`
    이미지 재사용, DB만 씀). 결과 CSV를 `kubectl logs`로 받아 `pool.csv`에 저장.
@@ -86,9 +97,13 @@ Allocated resources나 별도 모니터링으로 대체.)
 수천~수만 건). 테스트가 끝나면:
 
 ```bash
-kubectl exec -i postgres-0 -n <namespace> -- sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
-  < loadtest/cleanup.sql
+loadtest/cleanup_local.sh   # 로컬
+loadtest/cleanup_prod.sh    # 운영 — kubeconfig 경로는 그 파일 안에서 직접 맞출 것
 ```
+
+(`cleanup_*.sh`는 `cleanup.sql`을 postgres pod에 흘려보내는 걸 클러스터별로
+못박아둔 얇은 래퍼일 뿐이다. 다른 네임스페이스/클러스터면 직접
+`kubectl exec -i postgres-0 -n <namespace> -- sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < loadtest/cleanup.sql`.)
 
 **deadline 버퍼(기본 1시간) 안에 정리할 것.** 이 시딩은 `round_count=3`인데
 라운드를 1개만 만들어 둔다 — deadline이 지나면 백엔드 스케줄러가 이 라운드를
