@@ -47,45 +47,53 @@ locust를 따로 설치할 필요 없다. `run.sh`가 PATH에서 못 찾으면 �
 알아서 설치하고 그걸 쓴다 — 필요한 건 `python3`뿐이다.
 
 ```bash
-loadtest/run.sh 100 300              # 로컬(k3d), namespace=local, http://localhost
-loadtest/run.sh 100 300 prod         # 운영(EC2), namespace=emoselfie, https://emoselfie.click/
+loadtest/run.sh                                        # 로컬(k3d), 100명, 300초
+loadtest/run.sh --target prod                          # 운영(EC2), 100명, 300초
+loadtest/run.sh --users 300 --duration 600 --target prod
+loadtest/run.sh --no-monitor                           # monitor.sh 없이
 ```
 
-인자: `<동시 사용자 수> <지속 시간(초)> [local|prod] [대상 호스트]` — 3번째 인자가
-`local`(기본)이냐 `prod`냐로 네임스페이스·host 기본값에 더해 **어느 클러스터에
-붙을지까지** 같이 정해진다:
+전부 옵션 방식이다(`loadtest/run.sh --help` 참고). `--users`(기본 100)/`--duration`
+(기본 300) 말고는 다 기본값이 있다. `--target local|prod`가 네임스페이스·host
+기본값에 더해 **어느 클러스터에 붙을지까지** 같이 정해진다:
 
-- `local`: k3d의 고정 위치·컨텍스트(`~/.kube/config`, `k3d-mycluster`)로 항상
-  붙는다 — 지금 쉘의 `KUBECONFIG`가 뭘 가리키든 무시하고 로컬로 간다
+- `local`(기본): k3d의 고정 위치·컨텍스트(`~/.kube/config`, `k3d-mycluster`)로
+  항상 붙는다 — 지금 쉘의 `KUBECONFIG`가 뭘 가리키든 무시하고 로컬로 간다
 - `prod`: `LOADTEST_PROD_KUBECONFIG`/`LOADTEST_PROD_CONTEXT` 환경변수가 있으면
   그걸 쓰고, 없으면 지금 쉘에 이미 설정된 `KUBECONFIG`/컨텍스트를 그대로 쓴다
 
 ```bash
 LOADTEST_PROD_KUBECONFIG=~/k3s_prod.yaml LOADTEST_PROD_CONTEXT=default \
-  loadtest/run.sh 100 300 prod https://other.example.com   # host만 override
+  loadtest/run.sh --target prod --host https://other.example.com   # host만 override
 ```
 
-host를 따로 주면(4번째 인자) 그 값이 우선한다. 내부적으로:
+내부적으로:
 
 1. **시딩** — `seed.py`를 k8s Job으로 클러스터 안에서 실행(`emoselfie-backend`
    이미지 재사용, DB만 씀). 결과 CSV를 `kubectl logs`로 받아 `pool.csv`에 저장.
 2. **확인** — 준비된 슬롯 수를 보여주고 `yes`를 정확히 입력해야 다음 단계로 감.
    `yes`가 아니면 여기서 멈춘다(시드 데이터는 DB에 남음).
-3. **부하** — 로컬 머신에서 locust가 공인 도메인(ALB 경유)으로 직접 요청.
-   클러스터 안에 부하 생성기를 넣지 않는 이유는 이전 대화에서 정리한 대로,
-   같은 노드 CPU를 나눠 쓰면 측정치가 왜곡되기 때문.
+3. **부하** — 'yes' 확인 직후 `monitor.sh`를 백그라운드로 띄우고(끄려면
+   `--no-monitor`), 로컬 머신에서 locust가 공인 도메인(ALB 경유)으로 직접
+   요청한다. locust가 끝나면 monitor도 같이 종료된다. 클러스터 안에 부하
+   생성기를 넣지 않는 이유는 이전 대화에서 정리한 대로, 같은 노드 CPU를
+   나눠 쓰면 측정치가 왜곡되기 때문.
 
 ## 측정
 
-부하가 도는 동안 다른 터미널에서:
+`run.sh`가 기본으로 `monitor.sh`를 같이 돌려서 pod별 CPU/메모리를
+`loadtest/results/<타임스탬프>_monitor.csv`에 `timestamp,pod,cpu,memory`
+형태로 기록한다. `run.sh`가 남기는 `<타임스탬프>_stats_history.csv`와 시각
+기준으로 맞춰볼 수 있다(둘 다 UTC). 간격은 `--monitor-interval SEC`(기본 5)로
+바꾼다.
+
+`monitor.sh`는 독립적으로도 쓸 수 있다 — 다른 사람이 돌리는 테스트를 지켜볼
+때나, 부하 테스트 없이 그냥 지금 상태를 기록하고 싶을 때:
 
 ```bash
-kubectl top pod -l app=backend -n <namespace>
-kubectl top pod postgres-0 -n <namespace>
-kubectl top pod redis-sentinel-0 redis-0-0 -n <namespace>  # 등
+loadtest/monitor.sh local           # Ctrl+C로 멈출 때까지, 5초 간격
+loadtest/monitor.sh prod 5 300      # 운영, 5초 간격, 300초 후 자동 종료
 ```
-
-로컬 k3d는 `-n local`, EC2는 배포에 쓴 네임스페이스(`k8s/overlays/prod`는 `emoselfie`).
 
 (`metrics-server`가 클러스터에 있어야 함. 없으면 `kubectl describe node`의
 Allocated resources나 별도 모니터링으로 대체.)
@@ -106,10 +114,12 @@ loadtest/cleanup.sh prod     # 운영
 `kubectl exec -i postgres-0 -n <namespace> -- sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < loadtest/cleanup.sql`.
 
 **반복 테스트 중이면 `clean_run.sh`로 정리+실행을 한 번에** 할 수 있다 —
-인자는 `run.sh`와 완전히 동일하게 그대로 전달된다:
+인자는 `run.sh`와 완전히 동일하게 그대로 전달된다(옵션 없이 실행하면 로컬,
+100명, 300초):
 
 ```bash
-loadtest/clean_run.sh 100 300 prod
+loadtest/clean_run.sh
+loadtest/clean_run.sh --users 300 --duration 600 --target prod
 ```
 
 **deadline 버퍼(기본 1시간) 안에 정리할 것.** 이 시딩은 `round_count=3`인데
@@ -120,12 +130,13 @@ loadtest/clean_run.sh 100 300 prod
 
 ## 설정 바꾸기
 
-사용자 수/지속 시간/local·prod는 `run.sh`의 처음 세 인자로 바로 바뀐다. 그 외
-(참가자/방, think time, 버퍼, deadline 여유, spawn rate)는 환경변수로:
+사용자 수/지속 시간/local·prod/host/모니터링은 `run.sh` 옵션으로 바로 바뀐다
+(`--help` 참고). 그 외(참가자/방, think time, 버퍼, deadline 여유, spawn rate)는
+아직 환경변수로만 된다:
 
 ```bash
 LOADTEST_PARTICIPANTS_PER_ROOM=6 LOADTEST_THINK_TIME_SEC=2 LOADTEST_SPAWN_RATE=20 \
-  loadtest/run.sh 300 600 prod
+  loadtest/run.sh --users 300 --duration 600 --target prod
 ```
 
 네임스페이스는 `local`/`prod` 인자로 정해진 기본값(각각 `local`, `emoselfie`)을
@@ -138,6 +149,7 @@ LOADTEST_PARTICIPANTS_PER_ROOM=6 LOADTEST_THINK_TIME_SEC=2 LOADTEST_SPAWN_RATE=2
 
 - `seed.py` — DB 시딩 스크립트 (k8s Job에서 실행, stdlib hmac + asyncpg만 씀)
 - `locustfile.py` — 부하 시나리오 (로컬에서 `locust` 커맨드로 실행됨, run.sh가 호출)
+- `monitor.sh` — pod별 CPU/메모리를 CSV에 기록 (run.sh가 기본으로 백그라운드 실행)
 - `cleanup.sql`, `cleanup.sh` — 시드 데이터 삭제
 - `clean_run.sh` — `cleanup.sh` 후 `run.sh`를 이어서 실행하는 래퍼
 - `assets/sample_face.jpg` — 업로드용 실제 얼굴 사진(matplotlib 샘플 데이터,
