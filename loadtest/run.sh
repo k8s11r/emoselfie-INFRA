@@ -7,8 +7,19 @@
 #   예: loadtest/run.sh 100 300              # 로컬
 #       loadtest/run.sh 100 300 prod         # 운영, 도메인은 기본값 사용
 #       loadtest/run.sh 100 300 prod https://other.example.com   # host만 override
+#       LOADTEST_PROD_KUBECONFIG=~/k3s_prod.yaml LOADTEST_PROD_CONTEXT=default \
+#         loadtest/run.sh 100 300 prod       # 운영 kubeconfig를 지금 쉘과 무관하게 못박기
 #
-# 전제: kubectl이 대상 클러스터를 가리키고 있고(KUBECONFIG) 해당 네임스페이스에
+# local/prod가 클러스터도 같이 고른다 — 매번 KUBECONFIG를 손으로 unset/전환할
+# 필요 없다. local은 k3d 고정 위치·이름을 그대로 박아도 이식성 문제가 없어서
+# 하드코딩한다. prod는 사람마다 kubeconfig 저장 위치가 달라서(개인 경로) 여기
+# 하드코딩하지 않고 LOADTEST_PROD_KUBECONFIG/LOADTEST_PROD_CONTEXT 환경변수로
+# 받는다 — 안 주면 지금 쉘에 이미 설정된 KUBECONFIG/컨텍스트를 그대로 쓴다.
+#
+# --kubeconfig/--context를 매 kubectl 호출에 직접 붙인다(`kubectl config
+# use-context`는 안 쓴다 — 그건 ~/.kube/config 파일 자체의 current-context를
+# 영구히 바꿔버려서, 이 스크립트 밖에서 쓰던 컨텍스트까지 건드리게 된다).
+#
 # backend Deployment가 이미 떠 있어야 한다 — 이미지 태그와 backend-env/
 # emoselfie-secrets 실제 이름(kustomize 해시 접미사 포함)을 거기서 그대로
 # 가져다 쓴다. locust는 로컬에 `pip install locust`.
@@ -19,10 +30,24 @@ DURATION_SEC="${2:?사용법: loadtest/run.sh <users> <duration_sec> [local|prod
 TARGET="${3:-local}"
 
 case "$TARGET" in
-  local) NAMESPACE_DEFAULT=local; HOST_DEFAULT="http://localhost" ;;
-  prod)  NAMESPACE_DEFAULT=emoselfie; HOST_DEFAULT="https://emoselfie.click/" ;;
+  local)
+    NAMESPACE_DEFAULT=local
+    HOST_DEFAULT="http://localhost"
+    KCONFIG="$HOME/.kube/config"
+    KCONTEXT="k3d-mycluster"
+    ;;
+  prod)
+    NAMESPACE_DEFAULT=emoselfie
+    HOST_DEFAULT="https://emoselfie.click/"
+    KCONFIG="${LOADTEST_PROD_KUBECONFIG:-}"
+    KCONTEXT="${LOADTEST_PROD_CONTEXT:-}"
+    ;;
   *) echo "3번째 인자는 local 또는 prod (받은 값: $TARGET)" >&2; exit 1 ;;
 esac
+
+KCTL=(kubectl)
+[ -n "$KCONFIG" ] && KCTL+=(--kubeconfig "$KCONFIG")
+[ -n "$KCONTEXT" ] && KCTL+=(--context "$KCONTEXT")
 
 NAMESPACE="${LOADTEST_NAMESPACE:-$NAMESPACE_DEFAULT}"
 HOST="${4:-$HOST_DEFAULT}"
@@ -37,23 +62,23 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 POOL_CSV="$DIR/pool.csv"
 
 echo "== 0/3 배포된 backend에서 이미지/설정 이름 확인 (namespace: $NAMESPACE) =="
-BACKEND_IMAGE=$(kubectl get deployment backend -n "$NAMESPACE" \
+BACKEND_IMAGE=$("${KCTL[@]}" get deployment backend -n "$NAMESPACE" \
   -o jsonpath='{.spec.template.spec.containers[0].image}')
-CONFIGMAP_NAME=$(kubectl get deployment backend -n "$NAMESPACE" \
+CONFIGMAP_NAME=$("${KCTL[@]}" get deployment backend -n "$NAMESPACE" \
   -o jsonpath='{.spec.template.spec.containers[0].envFrom[0].configMapRef.name}')
-SECRET_NAME=$(kubectl get deployment backend -n "$NAMESPACE" \
+SECRET_NAME=$("${KCTL[@]}" get deployment backend -n "$NAMESPACE" \
   -o jsonpath='{.spec.template.spec.containers[0].envFrom[1].secretRef.name}')
 echo "  image=$BACKEND_IMAGE configmap=$CONFIGMAP_NAME secret=$SECRET_NAME"
 
 echo "== 1/3 시드 데이터 준비 (DB에 room/round/participant 생성) =="
 
-kubectl create configmap loadtest-seed-script -n "$NAMESPACE" \
+"${KCTL[@]}" create configmap loadtest-seed-script -n "$NAMESPACE" \
   --from-file=seed.py="$DIR/seed.py" \
-  --dry-run=client -o yaml | kubectl apply -f -
+  --dry-run=client -o yaml | "${KCTL[@]}" apply -f -
 
-kubectl delete job loadtest-seed -n "$NAMESPACE" --ignore-not-found
+"${KCTL[@]}" delete job loadtest-seed -n "$NAMESPACE" --ignore-not-found
 
-kubectl apply -n "$NAMESPACE" -f - <<EOF
+"${KCTL[@]}" apply -n "$NAMESPACE" -f - <<EOF
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -90,9 +115,9 @@ spec:
 EOF
 
 echo "시딩 Job 대기 중 (최대 ${SEED_WAIT_TIMEOUT})..."
-kubectl wait --for=condition=complete --timeout="$SEED_WAIT_TIMEOUT" job/loadtest-seed -n "$NAMESPACE"
+"${KCTL[@]}" wait --for=condition=complete --timeout="$SEED_WAIT_TIMEOUT" job/loadtest-seed -n "$NAMESPACE"
 
-kubectl logs job/loadtest-seed -n "$NAMESPACE" | grep -v '^# ' > "$POOL_CSV"
+"${KCTL[@]}" logs job/loadtest-seed -n "$NAMESPACE" | grep -v '^# ' > "$POOL_CSV"
 POOL_SIZE=$(( $(wc -l < "$POOL_CSV") - 1 ))
 
 echo
@@ -102,8 +127,7 @@ echo "  동시 사용자     : $USERS"
 echo "  지속 시간       : ${DURATION_SEC}s"
 echo "  준비된 업로드 슬롯: $POOL_SIZE (1회용 room/round/participant 조합)"
 echo "  주의: DB에 실제 room/round/participant/user 행이 생성된 상태입니다."
-echo "        테스트 후 'kubectl exec -i postgres-0 -n $NAMESPACE -- ...' 로"
-echo "        loadtest/cleanup.sql 을 적용해 정리하세요 (README 참고)"
+echo "        테스트 후 loadtest/cleanup_${TARGET}.sh 로 정리하세요 (README 참고)"
 echo "        (deadline 버퍼 ${DEADLINE_BUFFER_SEC}s 안에 정리 권장 — 그 이후엔"
 echo "         백엔드 스케줄러가 이 라운드들을 정상 라운드처럼 처리하려 시도합니다)."
 echo
