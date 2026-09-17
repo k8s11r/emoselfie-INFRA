@@ -148,7 +148,7 @@ echo "  동시 사용자     : $USERS"
 echo "  지속 시간       : ${DURATION_SEC}s"
 echo "  준비된 업로드 슬롯: $POOL_SIZE (1회용 room/round/participant 조합)"
 echo "  주의: DB에 실제 room/round/participant/user 행이 생성된 상태입니다."
-echo "        테스트 후 loadtest/cleanup_${TARGET}.sh 로 정리하세요 (README 참고)"
+echo "        테스트 후 loadtest/cleanup.sh $TARGET 로 정리하세요 (README 참고)"
 echo "        (deadline 버퍼 ${DEADLINE_BUFFER_SEC}s 안에 정리 권장 — 그 이후엔"
 echo "         백엔드 스케줄러가 이 라운드들을 정상 라운드처럼 처리하려 시도합니다)."
 echo
