@@ -11,7 +11,8 @@
 # 전제: kubectl이 대상 클러스터를 가리키고 있고(KUBECONFIG) 해당 네임스페이스에
 # backend Deployment가 이미 떠 있어야 한다 — 이미지 태그와 backend-env/
 # emoselfie-secrets 실제 이름(kustomize 해시 접미사 포함)을 거기서 그대로
-# 가져다 쓴다. locust는 로컬에 `pip install locust`.
+# 가져다 쓴다. locust는 따로 설치할 필요 없다 — 없으면 이 스크립트가 전용
+# 가상환경(~/.venvs/emoselfie-loadtest)에 알아서 깔아 쓴다. python3만 있으면 됨.
 set -euo pipefail
 
 USERS="${1:?사용법: loadtest/run.sh <users> <duration_sec> [local|prod] [host]}"
@@ -35,6 +36,26 @@ SEED_WAIT_TIMEOUT="${LOADTEST_SEED_TIMEOUT:-900s}"
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 POOL_CSV="$DIR/pool.csv"
+
+# locust 확보 — 이미 PATH에 있으면 그거(누가 pipx 등으로 따로 관리 중이면 존중),
+# 없으면 전용 venv를 쓰고, venv도 없으면 그 자리에서 만든다. 클러스터 작업
+# 시작하기 전에 미리 확인해서, python3 자체가 없는 경우 시딩 다 해놓고 나서야
+# 실패하는 걸 피한다.
+VENV_DIR="$HOME/.venvs/emoselfie-loadtest"
+if command -v locust >/dev/null 2>&1; then
+  LOCUST=locust
+elif [ -x "$VENV_DIR/bin/locust" ]; then
+  LOCUST="$VENV_DIR/bin/locust"
+else
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3가 필요합니다. https://python.org 에서 설치하거나 (macOS) brew install python3 후 다시 실행하세요." >&2
+    exit 1
+  fi
+  echo "== locust 없음 — $VENV_DIR 에 설치 (한 번만) =="
+  python3 -m venv "$VENV_DIR"
+  "$VENV_DIR/bin/pip" install -q --upgrade pip locust
+  LOCUST="$VENV_DIR/bin/locust"
+fi
 
 echo "== 0/3 배포된 backend에서 이미지/설정 이름 확인 (namespace: $NAMESPACE) =="
 BACKEND_IMAGE=$(kubectl get deployment backend -n "$NAMESPACE" \
@@ -119,7 +140,7 @@ echo "== 3/3 부하 테스트 시작 =="
 mkdir -p "$DIR/results"
 RESULT_PREFIX="$DIR/results/$(date +%Y%m%d-%H%M%S)"
 
-LOADTEST_POOL_CSV="$POOL_CSV" locust -f "$DIR/locustfile.py" \
+LOADTEST_POOL_CSV="$POOL_CSV" "$LOCUST" -f "$DIR/locustfile.py" \
   --host "$HOST" \
   --users "$USERS" \
   --spawn-rate "$SPAWN_RATE" \
