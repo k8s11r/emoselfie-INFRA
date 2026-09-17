@@ -42,12 +42,11 @@ DB에 미리 만들어 두고, `locustfile.py`가 요청마다 하나씩 소비�
 
 ## 실행
 
-```bash
-# 저장소 밖에 가상환경 하나 (레포에 venv 금지 — __pycache__만 몇천 개로 불어남)
-python3 -m venv ~/.venvs/emoselfie-loadtest
-~/.venvs/emoselfie-loadtest/bin/pip install locust
-export PATH="$HOME/.venvs/emoselfie-loadtest/bin:$PATH"   # 이 셸에서 locust를 바로 쓰기 위해
+locust를 따로 설치할 필요 없다. `run.sh`가 PATH에서 못 찾으면 저장소 밖
+전용 가상환경(`~/.venvs/emoselfie-loadtest`, 레포에 venv 금지라 밖에 둔다)에
+알아서 설치하고 그걸 쓴다 — 필요한 건 `python3`뿐이다.
 
+```bash
 loadtest/run.sh 100 300              # 로컬(k3d), namespace=local, http://localhost
 loadtest/run.sh 100 300 prod         # 운영(EC2), namespace=emoselfie, https://emoselfie.click/
 ```
