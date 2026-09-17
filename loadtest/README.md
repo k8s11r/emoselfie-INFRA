@@ -96,13 +96,21 @@ Allocated resources나 별도 모니터링으로 대체.)
 수천~수만 건). 테스트가 끝나면:
 
 ```bash
-loadtest/cleanup_local.sh   # 로컬
-loadtest/cleanup_prod.sh    # 운영 — kubeconfig 경로는 그 파일 안에서 직접 맞출 것
+loadtest/cleanup.sh          # 로컬(기본)
+loadtest/cleanup.sh prod     # 운영
 ```
 
-(`cleanup_*.sh`는 `cleanup.sql`을 postgres pod에 흘려보내는 걸 클러스터별로
-못박아둔 얇은 래퍼일 뿐이다. 다른 네임스페이스/클러스터면 직접
-`kubectl exec -i postgres-0 -n <namespace> -- sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < loadtest/cleanup.sql`.)
+`local`/`prod` 인자와 kubeconfig 고정 방식은 `run.sh`와 동일하다. `cleanup.sh`는
+`cleanup.sql`을 postgres pod에 흘려보내는 얇은 래퍼일 뿐이다. 다른
+네임스페이스/클러스터면 직접
+`kubectl exec -i postgres-0 -n <namespace> -- sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < loadtest/cleanup.sql`.
+
+**반복 테스트 중이면 `clean_run.sh`로 정리+실행을 한 번에** 할 수 있다 —
+인자는 `run.sh`와 완전히 동일하게 그대로 전달된다:
+
+```bash
+loadtest/clean_run.sh 100 300 prod
+```
 
 **deadline 버퍼(기본 1시간) 안에 정리할 것.** 이 시딩은 `round_count=3`인데
 라운드를 1개만 만들어 둔다 — deadline이 지나면 백엔드 스케줄러가 이 라운드를
@@ -130,7 +138,8 @@ LOADTEST_PARTICIPANTS_PER_ROOM=6 LOADTEST_THINK_TIME_SEC=2 LOADTEST_SPAWN_RATE=2
 
 - `seed.py` — DB 시딩 스크립트 (k8s Job에서 실행, stdlib hmac + asyncpg만 씀)
 - `locustfile.py` — 부하 시나리오 (로컬에서 `locust` 커맨드로 실행됨, run.sh가 호출)
-- `cleanup.sql` — 시드 데이터 삭제
+- `cleanup.sql`, `cleanup.sh` — 시드 데이터 삭제
+- `clean_run.sh` — `cleanup.sh` 후 `run.sh`를 이어서 실행하는 래퍼
 - `assets/sample_face.jpg` — 업로드용 실제 얼굴 사진(matplotlib 샘플 데이터,
   512x600). "no_face" 조기 종료가 아니라 실제 얼굴 검출+감정 추론 전체
   파이프라인을 태우기 위해 빈 이미지 대신 이걸 씀.
