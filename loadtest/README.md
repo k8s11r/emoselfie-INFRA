@@ -77,15 +77,18 @@ host를 따로 주면(4번째 인자) 그 값이 우선한다. 내부적으로:
 
 ## 측정
 
-부하가 도는 동안 다른 터미널에서:
+k9s로 직접 눈으로 보는 것도 되지만, 나중에 locust 결과와 시간 맞춰 비교하려면
+`monitor.sh`로 CSV에 기록해두는 게 낫다 — `run.sh`와 별개 터미널에서 같이 띄운다:
 
 ```bash
-kubectl top pod -l app=backend -n <namespace>
-kubectl top pod postgres-0 -n <namespace>
-kubectl top pod redis-sentinel-0 redis-0-0 -n <namespace>  # 등
+loadtest/monitor.sh local           # Ctrl+C로 멈출 때까지, 5초 간격
+loadtest/monitor.sh prod 5 300      # 운영, 5초 간격, 300초 후 자동 종료
 ```
 
-로컬 k3d는 `-n local`, EC2는 배포에 쓴 네임스페이스(`k8s/overlays/prod`는 `emoselfie`).
+`local`/`prod` 인자는 `run.sh`와 동일하게 kubeconfig/컨텍스트를 함께 고정한다.
+결과는 `loadtest/results/<타임스탬프>_monitor.csv`에 `timestamp,pod,cpu,memory`
+형태로 쌓이고, `run.sh`가 남기는 `<타임스탬프>_stats_history.csv`와 시각 기준으로
+맞춰볼 수 있다(둘 다 UTC).
 
 (`metrics-server`가 클러스터에 있어야 함. 없으면 `kubectl describe node`의
 Allocated resources나 별도 모니터링으로 대체.)
@@ -130,7 +133,8 @@ LOADTEST_PARTICIPANTS_PER_ROOM=6 LOADTEST_THINK_TIME_SEC=2 LOADTEST_SPAWN_RATE=2
 
 - `seed.py` — DB 시딩 스크립트 (k8s Job에서 실행, stdlib hmac + asyncpg만 씀)
 - `locustfile.py` — 부하 시나리오 (로컬에서 `locust` 커맨드로 실행됨, run.sh가 호출)
-- `cleanup.sql` — 시드 데이터 삭제
+- `monitor.sh` — 부하 도는 동안 pod별 CPU/메모리를 CSV에 기록 (run.sh와 별개 터미널)
+- `cleanup.sql`, `cleanup_local.sh`, `cleanup_prod.sh` — 시드 데이터 삭제
 - `assets/sample_face.jpg` — 업로드용 실제 얼굴 사진(matplotlib 샘플 데이터,
   512x600). "no_face" 조기 종료가 아니라 실제 얼굴 검출+감정 추론 전체
   파이프라인을 태우기 위해 빈 이미지 대신 이걸 씀.
