@@ -1,14 +1,6 @@
 #!/usr/bin/env bash
-# 업로드 엔드포인트 부하 테스트. 1) DB에 시드 데이터 준비 2) 사용자 확인(yes) 3) locust 실행.
-#
-# 사용법: loadtest/run.sh <동시 사용자 수> <지속 시간(초)> [local|prod] [대상 호스트]
-#   local(기본): namespace=local,  host 기본 http://localhost
-#   prod       : namespace=emoselfie, host 기본 https://emoselfie.click/
-#   예: loadtest/run.sh 100 300              # 로컬
-#       loadtest/run.sh 100 300 prod         # 운영, 도메인은 기본값 사용
-#       loadtest/run.sh 100 300 prod https://other.example.com   # host만 override
-#       LOADTEST_PROD_KUBECONFIG=~/k3s_prod.yaml LOADTEST_PROD_CONTEXT=default \
-#         loadtest/run.sh 100 300 prod       # 운영 kubeconfig를 지금 쉘과 무관하게 못박기
+# 업로드 엔드포인트 부하 테스트. 1) DB에 시드 데이터 준비 2) 사용자 확인(yes)
+# 3) locust 실행 — 기본적으로 pod 리소스 모니터링(monitor.sh)도 백그라운드로 같이 돈다.
 #
 # local/prod가 클러스터도 같이 고른다 — 매번 KUBECONFIG를 손으로 unset/전환할
 # 필요 없다. local은 k3d 고정 위치·이름을 그대로 박아도 이식성 문제가 없어서
@@ -26,9 +18,48 @@
 # 가상환경(~/.venvs/emoselfie-loadtest)에 알아서 깔아 쓴다. python3만 있으면 됨.
 set -euo pipefail
 
-USERS="${1:?사용법: loadtest/run.sh <users> <duration_sec> [local|prod] [host]}"
-DURATION_SEC="${2:?사용법: loadtest/run.sh <users> <duration_sec> [local|prod] [host]}"
-TARGET="${3:-local}"
+usage() {
+  cat <<'USAGE'
+사용법: loadtest/run.sh [옵션]
+
+  --users N               동시 사용자 수, 기본 100
+  --duration SEC          지속 시간(초), 기본 300
+  --target local|prod     기본 local — namespace/host 기본값과 kubeconfig까지 같이 정해짐
+  --host URL              기본값은 --target에 따름
+                            (local: http://localhost, prod: https://emoselfie.click/)
+  --monitor-interval SEC  monitor.sh 기록 간격, 기본 5
+  --no-monitor            모니터링 끄기 (기본은 켜짐)
+  -h, --help              이 도움말
+
+예:
+  loadtest/run.sh                                          # 로컬, 100명, 300초
+  loadtest/run.sh --users 100 --duration 300 --target prod
+  loadtest/run.sh --users 100 --duration 300 --target prod --host https://other.example.com
+  loadtest/run.sh --users 100 --duration 300 --no-monitor
+  LOADTEST_PROD_KUBECONFIG=~/k3s_prod.yaml LOADTEST_PROD_CONTEXT=default \
+    loadtest/run.sh --users 100 --duration 300 --target prod
+USAGE
+}
+
+USERS="100"
+DURATION_SEC="300"
+TARGET="local"
+HOST=""
+MONITOR_INTERVAL=5
+MONITOR_ENABLED=1
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --users) USERS="${2:?--users 값 필요}"; shift 2 ;;
+    --duration) DURATION_SEC="${2:?--duration 값 필요}"; shift 2 ;;
+    --target) TARGET="${2:?--target 값 필요}"; shift 2 ;;
+    --host) HOST="${2:?--host 값 필요}"; shift 2 ;;
+    --monitor-interval) MONITOR_INTERVAL="${2:?--monitor-interval 값 필요}"; shift 2 ;;
+    --no-monitor) MONITOR_ENABLED=0; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "알 수 없는 옵션: $1" >&2; usage >&2; exit 1 ;;
+  esac
+done
 
 case "$TARGET" in
   local)
@@ -43,7 +74,7 @@ case "$TARGET" in
     KCONFIG="${LOADTEST_PROD_KUBECONFIG:-}"
     KCONTEXT="${LOADTEST_PROD_CONTEXT:-}"
     ;;
-  *) echo "3번째 인자는 local 또는 prod (받은 값: $TARGET)" >&2; exit 1 ;;
+  *) echo "--target은 local 또는 prod (받은 값: $TARGET)" >&2; exit 1 ;;
 esac
 
 KCTL=(kubectl)
@@ -51,7 +82,7 @@ KCTL=(kubectl)
 [ -n "$KCONTEXT" ] && KCTL+=(--context "$KCONTEXT")
 
 NAMESPACE="${LOADTEST_NAMESPACE:-$NAMESPACE_DEFAULT}"
-HOST="${4:-$HOST_DEFAULT}"
+HOST="${HOST:-$HOST_DEFAULT}"
 THINK_TIME_SEC="${LOADTEST_THINK_TIME_SEC:-3}"
 BUFFER="${LOADTEST_BUFFER:-1.3}"
 PARTICIPANTS_PER_ROOM="${LOADTEST_PARTICIPANTS_PER_ROOM:-4}"
@@ -141,11 +172,15 @@ echo "시딩 Job 대기 중 (최대 ${SEED_WAIT_TIMEOUT})..."
 "${KCTL[@]}" logs job/loadtest-seed -n "$NAMESPACE" | grep -v '^# ' > "$POOL_CSV"
 POOL_SIZE=$(( $(wc -l < "$POOL_CSV") - 1 ))
 
+MONITOR_STATUS="꺼짐"
+[ "$MONITOR_ENABLED" -eq 1 ] && MONITOR_STATUS="켜짐 (간격 ${MONITOR_INTERVAL}s)"
+
 echo
 echo "== 2/3 준비 완료 =="
 echo "  대상 호스트     : $HOST"
 echo "  동시 사용자     : $USERS"
 echo "  지속 시간       : ${DURATION_SEC}s"
+echo "  모니터링        : $MONITOR_STATUS"
 echo "  준비된 업로드 슬롯: $POOL_SIZE (1회용 room/round/participant 조합)"
 echo "  주의: DB에 실제 room/round/participant/user 행이 생성된 상태입니다."
 echo "        테스트 후 loadtest/cleanup.sh $TARGET 로 정리하세요 (README 참고)"
@@ -155,7 +190,7 @@ echo
 read -r -p "부하 테스트를 시작할까요? (진행하려면 정확히 'yes' 입력): " CONFIRM
 
 if [ "$CONFIRM" != "yes" ]; then
-  echo "취소했습니다. 시드 데이터는 DB에 남아 있습니다 — 필요 없으면 loadtest/cleanup.sql로 지우세요."
+  echo "취소했습니다. 시드 데이터는 DB에 남아 있습니다 — 필요 없으면 loadtest/cleanup.sh $TARGET 로 지우세요."
   exit 0
 fi
 
@@ -163,6 +198,12 @@ echo
 echo "== 3/3 부하 테스트 시작 =="
 mkdir -p "$DIR/results"
 RESULT_PREFIX="$DIR/results/$(date +%Y%m%d-%H%M%S)"
+
+MONITOR_PID=""
+if [ "$MONITOR_ENABLED" -eq 1 ]; then
+  "$DIR/monitor.sh" "$TARGET" "$MONITOR_INTERVAL" &
+  MONITOR_PID=$!
+fi
 
 LOADTEST_POOL_CSV="$POOL_CSV" "$LOCUST" -f "$DIR/locustfile.py" \
   --host "$HOST" \
@@ -172,6 +213,11 @@ LOADTEST_POOL_CSV="$POOL_CSV" "$LOCUST" -f "$DIR/locustfile.py" \
   --headless \
   --csv "$RESULT_PREFIX"
 
+if [ -n "$MONITOR_PID" ]; then
+  kill "$MONITOR_PID" 2>/dev/null || true
+  wait "$MONITOR_PID" 2>/dev/null || true
+fi
+
 echo
 echo "완료. 결과: ${RESULT_PREFIX}_stats.csv"
-echo "DB 정리 잊지 마세요: loadtest/cleanup.sql"
+echo "DB 정리 잊지 마세요: loadtest/cleanup.sh $TARGET"
