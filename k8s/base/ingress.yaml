@@ -19,6 +19,13 @@ spec:
                 name: backend
                 port:
                   number: 8000
+          - path: /openapi.json
+            pathType: Exact
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 8000
           - path: /api
             pathType: Prefix
             backend:
